@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -117,11 +118,11 @@ class Config:
                 print(f"Warning: Failed to parse {channels_file}: {e}")
 
         # Auto-discover any channels passed via environment variables (e.g. YOUTUBE_CHANNEL_URL, YOUTUBE_CHANNEL_URL_2, etc.)
-        existing_urls = {ch.url.lower().rstrip("/") for ch in channels}
+        existing_urls = {urllib.parse.unquote(ch.url).lower().rstrip("/") for ch in channels}
         for env_key, env_val in os.environ.items():
             if env_key.startswith("YOUTUBE_CHANNEL_URL") and env_val.strip():
                 url_val = env_val.strip()
-                if url_val.lower().rstrip("/") not in existing_urls:
+                if urllib.parse.unquote(url_val).lower().rstrip("/") not in existing_urls:
                     raw_id = "channel"
                     if "@" in url_val:
                         raw_id = url_val.split("@")[-1].split("/")[0].split("?")[0]
