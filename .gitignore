@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Project output
+output/
+*.m4a
+*.mp3
+*.webm
+*.part
+
+# Environment & Credentials
+.env
+cookies.txt
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
