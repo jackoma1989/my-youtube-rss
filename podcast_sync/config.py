@@ -1,8 +1,9 @@
+import json
 import os
-import sys
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def load_env_file(dotenv_path: Path) -> None:
@@ -22,36 +23,70 @@ def load_env_file(dotenv_path: Path) -> None:
                     os.environ[key] = val
 
 
+def sanitize_channel_id(raw_id: str) -> str:
+    """Ensure channel ID is safe for URLs and filenames."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", raw_id)
+    return cleaned.lower() if cleaned else "podcast"
+
+
+@dataclass
+class ChannelConfig:
+    id: str
+    url: str
+    name: Optional[str] = None
+    max_episodes: int = 15
+    category: str = "Technology"
+    language: str = "zh-cn"
+    title: Optional[str] = None
+    author: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ChannelConfig":
+        raw_id = d.get("id") or ""
+        url = d.get("url") or ""
+        if not raw_id and "@" in url:
+            raw_id = url.split("@")[-1].split("/")[0]
+        if not raw_id:
+            raw_id = "default"
+
+        return cls(
+            id=sanitize_channel_id(raw_id),
+            url=url.strip(),
+            name=d.get("name"),
+            max_episodes=int(d.get("max_episodes", 15)),
+            category=d.get("category", "Technology"),
+            language=d.get("language", "zh-cn"),
+            title=d.get("title"),
+            author=d.get("author"),
+            description=d.get("description"),
+            image_url=d.get("image_url"),
+        )
+
+
 @dataclass
 class Config:
-    # YouTube channel or playlist URL
-    channel_url: str = ""
+    channels: List[ChannelConfig] = field(default_factory=list)
 
     # Cloudflare R2 Credentials (S3 compatible)
     r2_account_id: str = ""
     r2_access_key_id: str = ""
     r2_secret_access_key: str = ""
     r2_bucket_name: str = ""
-    r2_public_url: str = ""  # e.g., https://pub-xxxx.r2.dev or https://podcast.example.com
+    r2_public_url: str = ""  # e.g., https://podcast.hemajia.fun (no trailing slash)
 
-    # Podcast feed overrides (optional)
-    podcast_title: Optional[str] = None
-    podcast_description: Optional[str] = None
-    podcast_author: Optional[str] = None
-    podcast_image_url: Optional[str] = None
-    podcast_language: str = "zh-cn"
-    podcast_category: str = "Technology"
-
-    # Retention & Execution
-    max_episodes: int = 15
+    # Execution Options
     dry_run: bool = False
     output_dir: Path = field(default_factory=lambda: Path("./output"))
-
-    # Optional YouTube cookies (can be raw text or path to cookies.txt)
     youtube_cookies: Optional[str] = None
 
     @classmethod
-    def from_env(cls, env_path: Optional[Path] = None) -> "Config":
+    def from_env(
+        cls,
+        env_path: Optional[Path] = None,
+        channels_file: Optional[Path] = None,
+    ) -> "Config":
         if env_path is None:
             env_path = Path(".env")
         load_env_file(env_path)
@@ -62,32 +97,53 @@ class Config:
                 return default
             return v in ("1", "true", "yes", "on")
 
-        def get_int(key: str, default: int) -> int:
-            v = os.environ.get(key, "").strip()
-            if not v:
-                return default
-            try:
-                return int(v)
-            except ValueError:
-                return default
-
         output_dir_str = os.environ.get("OUTPUT_DIR", "./output").strip()
         public_url = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
 
+        # Load channels
+        channels: List[ChannelConfig] = []
+        if channels_file is None:
+            channels_file = Path("channels.json")
+
+        if channels_file.exists():
+            try:
+                with open(channels_file, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, dict) and item.get("url"):
+                                channels.append(ChannelConfig.from_dict(item))
+            except Exception as e:
+                print(f"Warning: Failed to parse {channels_file}: {e}")
+
+        # Fallback to single channel from environment if no channels in channels.json
+        single_url = os.environ.get("YOUTUBE_CHANNEL_URL", "").strip()
+        if not channels and single_url:
+            raw_id = "default"
+            if "@" in single_url:
+                raw_id = single_url.split("@")[-1].split("/")[0]
+            channels.append(
+                ChannelConfig(
+                    id=sanitize_channel_id(raw_id),
+                    url=single_url,
+                    name=os.environ.get("PODCAST_TITLE"),
+                    max_episodes=int(os.environ.get("MAX_EPISODES", 15)),
+                    category=os.environ.get("PODCAST_CATEGORY", "Technology"),
+                    language=os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
+                    title=os.environ.get("PODCAST_TITLE") or None,
+                    author=os.environ.get("PODCAST_AUTHOR") or None,
+                    description=os.environ.get("PODCAST_DESCRIPTION") or None,
+                    image_url=os.environ.get("PODCAST_IMAGE_URL") or None,
+                )
+            )
+
         return cls(
-            channel_url=os.environ.get("YOUTUBE_CHANNEL_URL", "").strip(),
+            channels=channels,
             r2_account_id=os.environ.get("R2_ACCOUNT_ID", "").strip(),
             r2_access_key_id=os.environ.get("R2_ACCESS_KEY_ID", "").strip(),
             r2_secret_access_key=os.environ.get("R2_SECRET_ACCESS_KEY", "").strip(),
             r2_bucket_name=os.environ.get("R2_BUCKET_NAME", "").strip(),
             r2_public_url=public_url,
-            podcast_title=os.environ.get("PODCAST_TITLE", "").strip() or None,
-            podcast_description=os.environ.get("PODCAST_DESCRIPTION", "").strip() or None,
-            podcast_author=os.environ.get("PODCAST_AUTHOR", "").strip() or None,
-            podcast_image_url=os.environ.get("PODCAST_IMAGE_URL", "").strip() or None,
-            podcast_language=os.environ.get("PODCAST_LANGUAGE", "zh-cn").strip(),
-            podcast_category=os.environ.get("PODCAST_CATEGORY", "Technology").strip(),
-            max_episodes=get_int("MAX_EPISODES", 15),
             dry_run=get_bool("DRY_RUN", False),
             output_dir=Path(output_dir_str),
             youtube_cookies=os.environ.get("YOUTUBE_COOKIES", "").strip() or None,
@@ -95,8 +151,14 @@ class Config:
 
     def validate(self) -> None:
         """Validate required configuration."""
-        if not self.channel_url:
-            raise ValueError("Missing required environment variable: YOUTUBE_CHANNEL_URL")
+        if not self.channels:
+            raise ValueError(
+                "No YouTube channels configured. Please add channels to channels.json or set YOUTUBE_CHANNEL_URL."
+            )
+
+        for ch in self.channels:
+            if not ch.url:
+                raise ValueError(f"Channel '{ch.id}' is missing a 'url'.")
 
         if not self.dry_run:
             missing = []

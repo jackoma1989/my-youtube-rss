@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yt_dlp
 
-from .config import Config
+from .config import ChannelConfig, Config
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,10 @@ class YouTubeFetcher:
         if not self.config.youtube_cookies:
             return
 
-        # If it's an existing file path
         if os.path.exists(self.config.youtube_cookies):
             self._cookie_file = self.config.youtube_cookies
             return
 
-        # Otherwise treat as raw Netscape cookie content and write to a temp file
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
         tmp.write(self.config.youtube_cookies)
         tmp.close()
@@ -46,15 +44,16 @@ class YouTubeFetcher:
             opts["cookiefile"] = self._cookie_file
         return opts
 
-    def get_channel_info_and_entries(self) -> Tuple[Dict[str, str], List[dict]]:
+    def get_channel_info_and_entries(
+        self, channel_config: ChannelConfig
+    ) -> Tuple[Dict[str, str], List[dict]]:
         """
-        Fetch channel metadata and the list of recent video items.
+        Fetch channel metadata and the list of recent video items for a given channel.
         Returns:
             channel_info: {title, description, author, image_url, link}
-            entries: list of video info dicts (at most config.max_episodes)
+            entries: list of video info dicts
         """
-        url = self.config.channel_url.strip()
-        # If it's a channel URL without tab, target /videos to get latest uploads
+        url = channel_config.url.strip()
         if ("youtube.com/@" in url or "youtube.com/channel/" in url or "youtube.com/c/" in url) and not (
             url.endswith("/videos") or url.endswith("/streams") or url.endswith("/shorts")
         ):
@@ -63,9 +62,9 @@ class YouTubeFetcher:
             fetch_url = url
 
         ydl_opts = self._get_base_ydl_opts()
-        ydl_opts["playlist_items"] = f"1:{self.config.max_episodes}"
+        ydl_opts["playlist_items"] = f"1:{channel_config.max_episodes}"
 
-        logger.info(f"Fetching channel info from: {fetch_url}")
+        logger.info(f"Fetching channel info for [{channel_config.id}] from: {fetch_url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             data = ydl.extract_info(fetch_url, download=False)
 
@@ -73,31 +72,31 @@ class YouTubeFetcher:
             raise RuntimeError(f"Could not extract channel data from {fetch_url}")
 
         channel_title = (
-            self.config.podcast_title
+            channel_config.title
+            or channel_config.name
             or data.get("channel")
             or data.get("uploader")
             or data.get("title")
-            or "YouTube Podcast"
+            or f"Channel {channel_config.id}"
         )
         channel_desc = (
-            self.config.podcast_description
+            channel_config.description
             or data.get("description")
             or f"Audio podcast synced from {channel_title}"
         )
         channel_author = (
-            self.config.podcast_author
+            channel_config.author
+            or channel_config.name
             or data.get("channel")
             or data.get("uploader")
             or channel_title
         )
         channel_link = data.get("webpage_url") or data.get("channel_url") or url
 
-        # Pick best channel avatar or cover image
-        image_url = self.config.podcast_image_url
+        image_url = channel_config.image_url
         if not image_url:
             thumbnails = data.get("thumbnails") or []
             if thumbnails:
-                # Prefer square/large thumbnails
                 image_url = thumbnails[-1].get("url")
             if not image_url and data.get("thumbnail"):
                 image_url = data.get("thumbnail")
@@ -112,16 +111,11 @@ class YouTubeFetcher:
 
         raw_entries = data.get("entries") or []
         entries = [e for e in raw_entries if e and e.get("id")]
-        logger.info(f"Found {len(entries)} recent videos for {channel_title}")
+        logger.info(f"Found {len(entries)} recent videos for [{channel_config.id}] {channel_title}")
         return channel_info, entries
 
     def download_audio_for_video(self, video_id: str, output_dir: Path) -> dict:
-        """
-        Download audio for a single video using yt-dlp.
-        Extracts format 140 (AAC) or falls back to best audio, saving as .m4a.
-        Returns:
-            dict containing video metadata and local audio path.
-        """
+        """Download audio for a single video using yt-dlp."""
         output_dir.mkdir(parents=True, exist_ok=True)
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         out_template = str(output_dir / f"{video_id}.%(ext)s")
@@ -148,13 +142,11 @@ class YouTubeFetcher:
             info = ydl.extract_info(video_url, download=True)
 
         if not target_audio_file.exists():
-            # Check if downloaded with another extension
             candidates = list(output_dir.glob(f"{video_id}.*"))
             if not candidates:
                 raise FileNotFoundError(f"Audio download failed for {video_id}, file not found")
             target_audio_file = candidates[0]
 
-        # Parse upload date / datetime
         pub_dt = None
         if info.get("timestamp"):
             pub_dt = datetime.fromtimestamp(info["timestamp"], tz=timezone.utc)
@@ -166,10 +158,8 @@ class YouTubeFetcher:
         if not pub_dt:
             pub_dt = datetime.now(timezone.utc)
 
-        # Pick best thumbnail
         thumbnails = info.get("thumbnails") or []
         thumb_url = thumbnails[-1].get("url") if thumbnails else info.get("thumbnail")
-
         file_size = target_audio_file.stat().st_size
 
         return {
