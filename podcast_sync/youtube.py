@@ -39,11 +39,7 @@ class YouTubeFetcher:
             "extract_flat": "in_playlist",
             "skip_download": True,
             "ignoreerrors": True,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios", "mweb", "web"]
-                }
-            },
+            "js_runtimes": {"node": {}},
         }
         if self._cookie_file and os.path.exists(self._cookie_file):
             opts["cookiefile"] = self._cookie_file
@@ -127,7 +123,7 @@ class YouTubeFetcher:
         target_audio_file = output_dir / f"{video_id}.m4a"
 
         ydl_opts = {
-            "format": "140/bestaudio[ext=m4a]/bestaudio/best",
+            "format": "bestaudio/best",
             "outtmpl": out_template,
             "postprocessors": [
                 {
@@ -135,11 +131,7 @@ class YouTubeFetcher:
                     "preferredcodec": "m4a",
                 }
             ],
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios", "mweb", "web"]
-                }
-            },
+            "js_runtimes": {"node": {}},
             "quiet": False,
             "no_warnings": True,
             "ignoreerrors": False,
