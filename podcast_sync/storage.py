@@ -241,3 +241,55 @@ class StorageManager:
                 logger.info(f"Deleted expired audio from R2: {key}")
             except Exception as e:
                 logger.debug(f"Could not delete {key}: {e}")
+
+    def cleanup_orphan_and_expired_audio(self, channel_id: str, retained_episodes: List[PodcastEpisode]) -> int:
+        """
+        List all audio files in audio/{channel_id}/ on R2,
+        and delete any file that is NOT in retained_episodes.
+        Guarantees R2 directory strictly contains at most len(retained_episodes) files!
+        """
+        if self.config.dry_run or not self.s3_client:
+            return 0
+
+        retained_ids = {ep.video_id for ep in retained_episodes}
+        prefix = f"audio/{channel_id}/"
+        deleted_count = 0
+
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.config.r2_bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    filename = key.split("/")[-1]
+                    if not filename.endswith(".m4a"):
+                        continue
+                    video_id = filename[:-4]
+                    if video_id not in retained_ids:
+                        logger.info(f"[{channel_id}] Pruning extra/orphan audio from R2: {key}")
+                        self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)
+                        deleted_count += 1
+        except Exception as e:
+            logger.warning(f"[{channel_id}] Error reconciling audio folder: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"[{channel_id}] Reconciled R2: purged {deleted_count} extra/orphan files. Remaining: {len(retained_episodes)}.")
+        return deleted_count
+
+    def cleanup_legacy_root_audio(self) -> int:
+        """Purge any legacy stray files directly under audio/ outside of channel subdirectories."""
+        if self.config.dry_run or not self.s3_client:
+            return 0
+        deleted_count = 0
+        try:
+            response = self.s3_client.list_objects_v2(Bucket=self.config.r2_bucket_name, Prefix="audio/", Delimiter="/")
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                if key != "audio/" and not key.endswith("/"):
+                    logger.info(f"Purging legacy root audio file from R2: {key}")
+                    self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)
+                    deleted_count += 1
+        except Exception as e:
+            logger.warning(f"Error cleaning legacy root audio: {e}")
+        return deleted_count
+
+

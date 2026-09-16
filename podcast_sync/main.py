@@ -45,6 +45,10 @@ def sync_single_channel(
     new_count = 0
 
     for entry in entries:
+        if len(updated_episodes) >= channel_cfg.max_episodes:
+            logger.info(f"[{channel_id}] Target quota of {channel_cfg.max_episodes} valid episodes reached. Stopping scan.")
+            break
+
         video_id = entry["id"]
         if video_id in known_by_id:
             updated_episodes.append(known_by_id[video_id])
@@ -134,6 +138,9 @@ def sync_single_channel(
         for exp_ep in expired_episodes:
             storage.delete_audio(channel_id, exp_ep.video_id)
 
+    # Active bucket reconciliation: ensure R2 audio folder strictly contains ONLY retained episodes
+    storage.cleanup_orphan_and_expired_audio(channel_id, retained_episodes)
+
     # 6. Save manifest
     storage.save_episodes_manifest(channel_id, retained_episodes)
 
@@ -213,6 +220,9 @@ def sync():
 
     storage = StorageManager(config)
     yt = YouTubeFetcher(config)
+
+    # Clean up any legacy stray audio files in root audio/
+    storage.cleanup_legacy_root_audio()
 
     results = []
     for idx, channel_cfg in enumerate(channels_to_process):
