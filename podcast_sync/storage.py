@@ -41,7 +41,9 @@ class StorageManager:
             return []
 
         # Try channel-specific key first
-        keys_to_try = [f"channels/{channel_id}/episodes.json", "episodes.json"]
+        keys_to_try = [f"channels/{channel_id}/episodes.json"]
+        if channel_id in ("wangzhian", "default"):
+            keys_to_try.append("episodes.json")
         for key in keys_to_try:
             try:
                 logger.info(f"Checking for {key} in Cloudflare R2...")

@@ -39,6 +39,11 @@ class YouTubeFetcher:
             "extract_flat": "in_playlist",
             "skip_download": True,
             "ignoreerrors": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "mweb", "web"]
+                }
+            },
         }
         if self._cookie_file and os.path.exists(self._cookie_file):
             opts["cookiefile"] = self._cookie_file
@@ -130,6 +135,11 @@ class YouTubeFetcher:
                     "preferredcodec": "m4a",
                 }
             ],
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "mweb", "web"]
+                }
+            },
             "quiet": False,
             "no_warnings": True,
             "ignoreerrors": False,
