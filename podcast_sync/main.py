@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import ChannelConfig, Config
-from .feed import PodcastChannel, PodcastEpisode, generate_podcast_rss
+from .feed import PodcastChannel, PodcastEpisode, generate_podcast_rss, validate_podcast_rss
 from .storage import StorageManager
 from .youtube import YouTubeFetcher
 
@@ -29,9 +29,10 @@ def sync_single_channel(
     channel_id = channel_cfg.id
     logger.info(f"--- Processing Channel: [{channel_id}] ({channel_cfg.url}) ---")
 
-    # 1. Load known episodes for this channel
+    # 1. Load known episodes and ignored list for this channel
     known_episodes = storage.load_episodes_manifest(channel_id)
     known_by_id = {ep.video_id: ep for ep in known_episodes}
+    ignored_videos = storage.load_ignored_videos(channel_id)
 
     # 2. Query YouTube channel for latest videos
     channel_info, entries = yt.get_channel_info_and_entries(channel_cfg)
@@ -48,6 +49,13 @@ def sync_single_channel(
         if video_id in known_by_id:
             updated_episodes.append(known_by_id[video_id])
             logger.info(f"[{channel_id}] Existing episode: [{video_id}] {entry.get('title', '')}")
+            continue
+
+        if video_id in ignored_videos:
+            logger.info(
+                f"[{channel_id}] Skipping ignored video: [{video_id}] {entry.get('title', '')} "
+                f"(Reason: {ignored_videos[video_id].get('reason', 'ignored')})"
+            )
             continue
 
         # New video to download and convert
@@ -82,7 +90,32 @@ def sync_single_channel(
                     logger.warning(f"Could not delete temporary file {local_path}: {e}")
 
         except Exception as e:
-            logger.error(f"[{channel_id}] Failed to process video {video_id}: {e}")
+            err_str = str(e)
+            err_lower = err_str.lower()
+            is_members_only = any(
+                kw in err_lower
+                for kw in [
+                    "members-only",
+                    "join this channel",
+                    "members of",
+                    "subscriber_only",
+                    "private video",
+                    "sign in if you've been granted access",
+                    "payment required",
+                    "premium",
+                ]
+            )
+            if is_members_only:
+                logger.warning(f"[{channel_id}] Video [{video_id}] is restricted / members-only. Marking as ignored.")
+                storage.mark_video_ignored(
+                    channel_id=channel_id,
+                    video_id=video_id,
+                    reason="members_only",
+                    title=entry.get("title", ""),
+                    error=err_str,
+                )
+            else:
+                logger.error(f"[{channel_id}] Failed to process video {video_id}: {e}")
 
     # Retain existing episodes not in current fetch (up to max_episodes)
     current_ids = {ep.video_id for ep in updated_episodes}
@@ -118,7 +151,28 @@ def sync_single_channel(
 
     rss_xml = generate_podcast_rss(podcast_channel)
 
-    # 8. Upload feed.xml
+    # 8. Validate RSS Feed XML accuracy before uploading
+    try:
+        val_res = validate_podcast_rss(
+            rss_xml=rss_xml,
+            channel_id=channel_id,
+            expected_count=len(retained_episodes),
+            r2_public_url=config.r2_public_url,
+        )
+        if new_count > 0:
+            logger.info(
+                f"[{channel_id}] ✓ XML accuracy verified after adding {new_count} new episodes "
+                f"(Total: {val_res['episodes_count']} episodes, valid enclosures and syntax)."
+            )
+        else:
+            logger.info(
+                f"[{channel_id}] ✓ XML accuracy verified (Total: {val_res['episodes_count']} episodes, valid enclosures and syntax)."
+            )
+    except Exception as e:
+        logger.error(f"[{channel_id}] XML accuracy validation FAILED: {e}")
+        raise
+
+    # 9. Upload feed.xml
     feed_url = storage.upload_channel_feed(channel_id, rss_xml, is_primary=is_primary)
 
     logger.info(f"[{channel_id}] Sync finished. Feed URL: {feed_url}")

@@ -65,9 +65,10 @@ class YouTubeFetcher:
             fetch_url = url
 
         ydl_opts = self._get_base_ydl_opts()
-        ydl_opts["playlist_items"] = f"1:{channel_config.max_episodes}"
+        fetch_limit = channel_config.max_episodes + 10
+        ydl_opts["playlist_items"] = f"1:{fetch_limit}"
 
-        logger.info(f"Fetching channel info for [{channel_config.id}] from: {fetch_url}")
+        logger.info(f"Fetching channel info for [{channel_config.id}] (up to {fetch_limit} entries) from: {fetch_url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             data = ydl.extract_info(fetch_url, download=False)
 

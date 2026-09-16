@@ -167,3 +167,77 @@ def generate_podcast_rss(channel: PodcastChannel) -> str:
     rough_string = ET.tostring(rss, encoding="utf-8")
     reparsed = minidom.parseString(rough_string)
     return reparsed.toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
+
+
+def validate_podcast_rss(
+    rss_xml: str,
+    channel_id: str,
+    expected_count: Optional[int] = None,
+    r2_public_url: Optional[str] = None,
+) -> dict:
+    """
+    Validate Apple Podcasts RSS feed XML for syntax, completeness, and audio enclosure accuracy.
+    Raises ValueError if validation fails.
+    """
+    try:
+        root = ET.fromstring(rss_xml.encode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"[{channel_id}] XML parsing failed: {e}")
+
+    if root.tag != "rss" or root.attrib.get("version") != "2.0":
+        raise ValueError(f"[{channel_id}] Invalid root RSS tag or version.")
+
+    channel = root.find("channel")
+    if channel is None:
+        raise ValueError(f"[{channel_id}] Missing <channel> element in RSS.")
+
+    channel_title = channel.findtext("title", "").strip()
+    if not channel_title:
+        raise ValueError(f"[{channel_id}] Missing channel <title>.")
+
+    items = channel.findall("item")
+    if expected_count is not None and len(items) != expected_count:
+        raise ValueError(
+            f"[{channel_id}] Episode count mismatch: expected {expected_count}, found {len(items)} in XML."
+        )
+
+    guids = set()
+    expected_audio_prefix = f"/audio/{channel_id}/"
+
+    for idx, item in enumerate(items, start=1):
+        item_title = item.findtext("title", "").strip()
+        guid = item.findtext("guid", "").strip()
+        if not guid:
+            raise ValueError(f"[{channel_id}] Item #{idx} ({item_title}) is missing <guid>.")
+        if guid in guids:
+            raise ValueError(f"[{channel_id}] Duplicate GUID found: {guid}")
+        guids.add(guid)
+
+        enclosure = item.find("enclosure")
+        if enclosure is None:
+            raise ValueError(f"[{channel_id}] Item #{idx} ({item_title}) is missing <enclosure>.")
+
+        audio_url = enclosure.attrib.get("url", "")
+        audio_type = enclosure.attrib.get("type", "")
+        audio_len = enclosure.attrib.get("length", "0")
+
+        if not audio_url:
+            raise ValueError(f"[{channel_id}] Item #{idx} enclosure missing 'url'.")
+        if audio_type != "audio/x-m4a":
+            raise ValueError(f"[{channel_id}] Item #{idx} enclosure unexpected MIME type: {audio_type}")
+        if not audio_len.isdigit() or int(audio_len) <= 0:
+            raise ValueError(f"[{channel_id}] Item #{idx} enclosure invalid file length: {audio_len}")
+
+        # Enforce channel isolation in enclosure URL
+        if expected_audio_prefix not in audio_url:
+            raise ValueError(
+                f"[{channel_id}] Enclosure URL validation failed: '{audio_url}' does not contain '{expected_audio_prefix}'!"
+            )
+
+    return {
+        "valid": True,
+        "channel_id": channel_id,
+        "title": channel_title,
+        "episodes_count": len(items),
+    }
+

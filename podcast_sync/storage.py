@@ -27,42 +27,118 @@ class StorageManager:
 
     def load_episodes_manifest(self, channel_id: str) -> List[PodcastEpisode]:
         """Load known episodes manifest for a specific channel from R2 or local cache."""
+        expected_prefix = f"audio/{channel_id}/"
+
+        def _filter_valid(eps: List[PodcastEpisode]) -> List[PodcastEpisode]:
+            valid = []
+            for ep in eps:
+                if ep.audio_filename.startswith(expected_prefix):
+                    valid.append(ep)
+                else:
+                    logger.warning(
+                        f"[{channel_id}] Dropping legacy/cross-channel episode [{ep.video_id}] with audio_filename='{ep.audio_filename}'"
+                    )
+            return valid
+
         if self.config.dry_run:
             local_json = self.config.output_dir / channel_id / "episodes.json"
-            if not local_json.exists():
-                local_json = self.config.output_dir / "episodes.json"
             if local_json.exists():
                 try:
                     with open(local_json, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                        return [PodcastEpisode.from_dict(item) for item in data]
+                        return _filter_valid([PodcastEpisode.from_dict(item) for item in data])
                 except Exception as e:
                     logger.warning(f"Failed to read local manifest for {channel_id}: {e}")
             return []
 
-        # Try channel-specific key first
-        keys_to_try = [f"channels/{channel_id}/episodes.json"]
-        if channel_id in ("wangzhian", "default"):
-            keys_to_try.append("episodes.json")
-        for key in keys_to_try:
-            try:
-                logger.info(f"Checking for {key} in Cloudflare R2...")
-                response = self.s3_client.get_object(
-                    Bucket=self.config.r2_bucket_name,
-                    Key=key,
-                )
-                content = response["Body"].read().decode("utf-8")
-                data = json.loads(content)
-                episodes = [PodcastEpisode.from_dict(item) for item in data]
-                logger.info(f"Loaded {len(episodes)} existing episodes for [{channel_id}] from {key}")
-                return episodes
-            except ClientError as e:
-                if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
-                    continue
+        key = f"channels/{channel_id}/episodes.json"
+        try:
+            logger.info(f"Checking for {key} in Cloudflare R2...")
+            response = self.s3_client.get_object(
+                Bucket=self.config.r2_bucket_name,
+                Key=key,
+            )
+            content = response["Body"].read().decode("utf-8")
+            data = json.loads(content)
+            episodes = [PodcastEpisode.from_dict(item) for item in data]
+            filtered = _filter_valid(episodes)
+            logger.info(f"Loaded {len(filtered)} valid existing episodes for [{channel_id}] from {key}")
+            return filtered
+        except ClientError as e:
+            if e.response["Error"]["Code"] not in ("NoSuchKey", "404"):
                 raise
 
         logger.info(f"No existing manifest found for channel [{channel_id}]. Starting fresh.")
         return []
+
+    def load_ignored_videos(self, channel_id: str) -> dict:
+        """Load ignored/members-only videos dictionary {video_id: {reason, title, ...}}."""
+        if self.config.dry_run:
+            local_json = self.config.output_dir / channel_id / "ignored.json"
+            if local_json.exists():
+                try:
+                    with open(local_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict):
+                            return data
+                except Exception as e:
+                    logger.warning(f"Failed to read local ignored list for {channel_id}: {e}")
+            return {}
+
+        key = f"channels/{channel_id}/ignored.json"
+        try:
+            response = self.s3_client.get_object(
+                Bucket=self.config.r2_bucket_name,
+                Key=key,
+            )
+            content = response["Body"].read().decode("utf-8")
+            data = json.loads(content)
+            if isinstance(data, dict):
+                logger.info(f"Loaded {len(data)} ignored videos for [{channel_id}] from {key}")
+                return data
+            return {}
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                return {}
+            logger.warning(f"Error loading {key} from R2: {e}")
+            return {}
+
+    def save_ignored_videos(self, channel_id: str, ignored: dict) -> None:
+        """Save ignored/members-only videos dict to R2 and local disk."""
+        json_str = json.dumps(ignored, ensure_ascii=False, indent=2)
+
+        channel_output_dir = self.config.output_dir / channel_id
+        channel_output_dir.mkdir(parents=True, exist_ok=True)
+        with open(channel_output_dir / "ignored.json", "w", encoding="utf-8") as f:
+            f.write(json_str)
+
+        if self.config.dry_run:
+            return
+
+        key = f"channels/{channel_id}/ignored.json"
+        self.s3_client.put_object(
+            Bucket=self.config.r2_bucket_name,
+            Key=key,
+            Body=json_str.encode("utf-8"),
+            ContentType="application/json; charset=utf-8",
+        )
+        logger.info(f"Saved {len(ignored)} ignored videos to R2 at {key}")
+
+    def mark_video_ignored(
+        self, channel_id: str, video_id: str, reason: str = "members_only", title: str = "", error: str = ""
+    ) -> None:
+        """Mark a video as ignored in the manifest."""
+        from datetime import datetime, timezone
+
+        ignored = self.load_ignored_videos(channel_id)
+        ignored[video_id] = {
+            "title": title,
+            "reason": reason,
+            "error": error[:200] if error else "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.save_ignored_videos(channel_id, ignored)
+        logger.info(f"[{channel_id}] Marked video [{video_id}] as ignored ({reason}).")
 
     def save_episodes_manifest(self, channel_id: str, episodes: List[PodcastEpisode]) -> None:
         """Save updated episodes manifest for a channel to R2 and local disk."""
