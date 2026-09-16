@@ -116,26 +116,31 @@ class Config:
             except Exception as e:
                 print(f"Warning: Failed to parse {channels_file}: {e}")
 
-        # Fallback to single channel from environment if no channels in channels.json
-        single_url = os.environ.get("YOUTUBE_CHANNEL_URL", "").strip()
-        if not channels and single_url:
-            raw_id = "default"
-            if "@" in single_url:
-                raw_id = single_url.split("@")[-1].split("/")[0]
-            channels.append(
-                ChannelConfig(
-                    id=sanitize_channel_id(raw_id),
-                    url=single_url,
-                    name=os.environ.get("PODCAST_TITLE"),
-                    max_episodes=int(os.environ.get("MAX_EPISODES", 15)),
-                    category=os.environ.get("PODCAST_CATEGORY", "Technology"),
-                    language=os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
-                    title=os.environ.get("PODCAST_TITLE") or None,
-                    author=os.environ.get("PODCAST_AUTHOR") or None,
-                    description=os.environ.get("PODCAST_DESCRIPTION") or None,
-                    image_url=os.environ.get("PODCAST_IMAGE_URL") or None,
-                )
-            )
+        # Auto-discover any channels passed via environment variables (e.g. YOUTUBE_CHANNEL_URL, YOUTUBE_CHANNEL_URL_2, etc.)
+        existing_urls = {ch.url.lower().rstrip("/") for ch in channels}
+        for env_key, env_val in os.environ.items():
+            if env_key.startswith("YOUTUBE_CHANNEL_URL") and env_val.strip():
+                url_val = env_val.strip()
+                if url_val.lower().rstrip("/") not in existing_urls:
+                    raw_id = "channel"
+                    if "@" in url_val:
+                        raw_id = url_val.split("@")[-1].split("/")[0].split("?")[0]
+                    elif "channel/" in url_val:
+                        raw_id = url_val.split("channel/")[-1].split("/")[0].split("?")[0]
+                    else:
+                        suffix = env_key.replace("YOUTUBE_CHANNEL_URL", "").strip("_").lower()
+                        raw_id = f"channel_{suffix}" if suffix else "default"
+
+                    channels.append(
+                        ChannelConfig(
+                            id=sanitize_channel_id(raw_id),
+                            url=url_val,
+                            max_episodes=int(os.environ.get("MAX_EPISODES", 15)),
+                            category=os.environ.get("PODCAST_CATEGORY", "News"),
+                            language=os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
+                        )
+                    )
+                    existing_urls.add(url_val.lower().rstrip("/"))
 
         return cls(
             channels=channels,

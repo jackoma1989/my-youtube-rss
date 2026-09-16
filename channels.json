@@ -6,5 +6,13 @@
     "max_episodes": 15,
     "category": "News",
     "language": "zh-cn"
+  },
+  {
+    "id": "chaijing2023",
+    "name": "柴静",
+    "url": "https://www.youtube.com/@chaijing2023",
+    "max_episodes": 15,
+    "category": "News",
+    "language": "zh-cn"
   }
 ]

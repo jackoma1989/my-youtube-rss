@@ -74,7 +74,7 @@ class TestPodcastSync(unittest.TestCase):
             tmp_path = Path(tmp.name)
 
         try:
-            cfg = Config.from_env(channels_file=tmp_path)
+            cfg = Config.from_env(env_path=Path("nonexistent.env"), channels_file=tmp_path)
             cfg.dry_run = True
             cfg.validate()
             self.assertEqual(len(cfg.channels), 2)

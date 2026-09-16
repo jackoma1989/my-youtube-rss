@@ -37,6 +37,10 @@ jobs:
       - name: Run Podcast Sync
         env:
           YOUTUBE_CHANNEL_URL: ${{ secrets.YOUTUBE_CHANNEL_URL }}
+          YOUTUBE_CHANNEL_URL_2: ${{ secrets.YOUTUBE_CHANNEL_URL_2 }}
+          YOUTUBE_CHANNEL_URL_3: ${{ secrets.YOUTUBE_CHANNEL_URL_3 }}
+          YOUTUBE_CHANNEL_URL_4: ${{ secrets.YOUTUBE_CHANNEL_URL_4 }}
+          YOUTUBE_CHANNEL_URL_5: ${{ secrets.YOUTUBE_CHANNEL_URL_5 }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
