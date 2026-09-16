@@ -29,9 +29,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -U --pre "yt-dlp[default]"
           pip install -r requirements.txt
 
       - name: Run Podcast Sync

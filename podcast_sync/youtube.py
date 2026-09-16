@@ -17,6 +17,8 @@ class YouTubeFetcher:
         self.config = config
         self._cookie_file: Optional[str] = None
         self._setup_cookies()
+        logger.info(f"Initialized yt-dlp version: {yt_dlp.version.__version__}")
+        logger.info(f"Authentication cookies active: {bool(self._cookie_file)}")
 
     def _setup_cookies(self):
         """Prepare cookie file if provided in config."""
