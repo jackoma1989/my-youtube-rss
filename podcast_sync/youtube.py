@@ -12,6 +12,34 @@ from .config import ChannelConfig, Config
 logger = logging.getLogger(__name__)
 
 
+def sanitize_vtt_file(vtt_path: Path) -> None:
+    """Sanitize downloaded WebVTT file by stripping 'Kind: captions' and 'Language:' header lines."""
+    if not vtt_path.exists():
+        return
+    try:
+        content = vtt_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        new_lines = []
+        in_header = True
+        for line in lines:
+            if in_header:
+                if line.startswith("WEBVTT"):
+                    new_lines.append(line)
+                    continue
+                if line.strip() == "":
+                    in_header = False
+                    new_lines.append("")
+                    continue
+                if line.startswith("Kind:") or line.startswith("Language:"):
+                    continue
+                new_lines.append(line)
+            else:
+                new_lines.append(line)
+        vtt_path.write_text("\n".join(new_lines).strip() + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Failed to sanitize VTT file {vtt_path}: {e}")
+
+
 class YouTubeFetcher:
     def __init__(self, config: Config):
         self.config = config
@@ -161,6 +189,7 @@ class YouTubeFetcher:
                 continue
             seen_langs.add(norm_lang)
 
+            sanitize_vtt_file(vtt_path)
             results.append({
                 "language": norm_lang,
                 "lang_suffix": suffix,

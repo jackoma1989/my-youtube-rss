@@ -6,7 +6,8 @@ import tempfile
 import json
 
 from podcast_sync.config import ChannelConfig, Config, sanitize_channel_id
-from podcast_sync.feed import PodcastChannel, PodcastEpisode, generate_podcast_rss, format_duration, validate_podcast_rss
+from podcast_sync.feed import PodcastChannel, PodcastEpisode, PodcastTranscript, generate_podcast_rss, format_duration, validate_podcast_rss
+from podcast_sync.youtube import sanitize_vtt_file
 
 
 class TestPodcastSync(unittest.TestCase):
@@ -59,6 +60,72 @@ class TestPodcastSync(unittest.TestCase):
         enclosure = item.find("enclosure")
         self.assertEqual(enclosure.attrib["url"], ep1.audio_url)
         self.assertEqual(enclosure.attrib["type"], "audio/x-m4a")
+
+    def test_transcript_rss_and_sanitization(self):
+        # 1. Test VTT sanitization
+        with tempfile.NamedTemporaryFile("w+", suffix=".vtt", delete=False, encoding="utf-8") as tmp:
+            tmp.write("WEBVTT\nKind: captions\nLanguage: zh-Hans\n\n00:00.000 --> 00:05.000\nHello\n")
+            tmp_path = Path(tmp.name)
+
+        try:
+            sanitize_vtt_file(tmp_path)
+            content = tmp_path.read_text(encoding="utf-8")
+            self.assertIn("WEBVTT", content)
+            self.assertNotIn("Kind: captions", content)
+            self.assertNotIn("Language: zh-Hans", content)
+            self.assertIn("00:00.000 --> 00:05.000", content)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+        # 2. Test RSS transcript generation without rel="captions" and with show notes links
+        ep = PodcastEpisode(
+            video_id="test12345",
+            title="Episode with Transcript",
+            description="Episode discussion details.",
+            pub_date=datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=120,
+            audio_filename="audio/test/test12345.m4a",
+            audio_url="https://podcast.example.com/audio/test/test12345.m4a",
+            file_size_bytes=1000,
+            transcripts=[
+                PodcastTranscript(
+                    url="https://podcast.example.com/transcripts/test/test12345.zh-Hans.vtt",
+                    type="text/vtt",
+                    language="zh-CN",
+                )
+            ],
+        )
+
+        ch = PodcastChannel(
+            title="Channel",
+            link="https://example.com",
+            description="Desc",
+            author="Author",
+            image_url="https://example.com/img.jpg",
+            episodes=[ep],
+        )
+
+        xml = generate_podcast_rss(ch)
+        root = ET.fromstring(xml)
+        item = root.find("channel/item")
+        self.assertIsNotNone(item)
+
+        # Check podcast:transcript tag
+        podcast_ns = "https://podcastindex.org/namespace/1.0"
+        transcript_tag = item.find(f"{{{podcast_ns}}}transcript")
+        self.assertIsNotNone(transcript_tag)
+        self.assertEqual(transcript_tag.attrib["url"], "https://podcast.example.com/transcripts/test/test12345.zh-Hans.vtt")
+        self.assertEqual(transcript_tag.attrib["type"], "text/vtt")
+        self.assertEqual(transcript_tag.attrib["language"], "zh-CN")
+        # Audio transcript should NOT have rel="captions"
+        self.assertNotIn("rel", transcript_tag.attrib)
+
+        # Check episode description show notes link
+        desc = item.find("description").text
+        self.assertIn("📝 字幕/文稿在线阅读：", desc)
+        self.assertIn("https://podcast.example.com/transcripts/test/test12345.zh-Hans.vtt", desc)
+        self.assertIn("简体中文字幕 (WebVTT)", desc)
 
     def test_channel_sanitization(self):
         self.assertEqual(sanitize_channel_id("Wang-ZhiAn_123"), "wang-zhian_123")

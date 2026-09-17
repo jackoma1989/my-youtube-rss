@@ -90,7 +90,6 @@ def sync_single_channel(
                                 url=t_url,
                                 type="text/vtt",
                                 language=t_meta["language"],
-                                rel="captions",
                             )
                         )
                     except Exception as te:
@@ -194,7 +193,6 @@ def sync_single_channel(
                                     url=t_url,
                                     type="text/vtt",
                                     language=sm["language"],
-                                    rel="captions",
                                 )
                             )
                         except Exception as te:

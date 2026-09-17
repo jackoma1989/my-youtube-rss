@@ -11,7 +11,7 @@ class PodcastTranscript:
     url: str
     type: str = "text/vtt"
     language: str = "zh-CN"
-    rel: Optional[str] = "captions"
+    rel: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -29,7 +29,7 @@ class PodcastTranscript:
             url=d["url"],
             type=d.get("type", "text/vtt"),
             language=d.get("language", "zh-CN"),
-            rel=d.get("rel", "captions"),
+            rel=d.get("rel"),
         )
 
 
@@ -174,6 +174,20 @@ def generate_podcast_rss(channel: PodcastChannel) -> str:
 
         # Description
         desc_text = ep.description if ep.description else ep.title
+        if ep.transcripts:
+            links = []
+            for tr in ep.transcripts:
+                lang_l = tr.language.lower()
+                if "hant" in lang_l or "tw" in lang_l:
+                    label = "繁体中文字幕"
+                elif "hans" in lang_l or "cn" in lang_l:
+                    label = "简体中文字幕"
+                elif "en" in lang_l:
+                    label = "英文字幕"
+                else:
+                    label = f"{tr.language} 字幕"
+                links.append(f"• <a href=\"{tr.url}\">{label} (WebVTT)</a>")
+            desc_text = f"{desc_text}\n\n📝 字幕/文稿在线阅读：\n" + "\n".join(links)
         ET.SubElement(item, "description").text = desc_text
 
         # Link to original youtube video
