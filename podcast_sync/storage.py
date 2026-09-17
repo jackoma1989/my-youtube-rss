@@ -285,11 +285,71 @@ class StorageManager:
             for obj in response.get("Contents", []):
                 key = obj["Key"]
                 if key != "audio/" and not key.endswith("/"):
-                    logger.info(f"Purging legacy root audio file from R2: {key}")
                     self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)
                     deleted_count += 1
         except Exception as e:
             logger.warning(f"Error cleaning legacy root audio: {e}")
         return deleted_count
+
+    def list_persisted_channels(self) -> set:
+        """List all channel IDs that have existing data in R2 channels/ or local output."""
+        channels = set()
+        if self.config.dry_run or not self.s3_client:
+            channels_dir = self.config.output_dir
+            if channels_dir.exists():
+                for p in channels_dir.iterdir():
+                    if p.is_dir() and (p / "episodes.json").exists():
+                        channels.add(p.name)
+            return channels
+
+        try:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.config.r2_bucket_name,
+                Prefix="channels/",
+                Delimiter="/",
+            )
+            for prefix in response.get("CommonPrefixes", []):
+                parts = prefix["Prefix"].strip("/").split("/")
+                if len(parts) >= 2 and parts[1]:
+                    channels.add(parts[1])
+        except Exception as e:
+            logger.warning(f"Failed to list persisted channels from R2: {e}")
+
+        return channels
+
+    def remove_channel_feed(self, channel_id: str) -> bool:
+        """
+        Remove public RSS feed XML for an unsubscribed channel from R2.
+        Preserves all audio files and metadata in audio/{channel_id}/ and channels/{channel_id}/!
+        """
+        keys_to_remove = [f"{channel_id}.xml", f"{channel_id}/feed.xml"]
+
+        # Remove local feed files if exist
+        for k in keys_to_remove:
+            loc_f = self.config.output_dir / k
+            if loc_f.exists():
+                try:
+                    loc_f.unlink()
+                except Exception as e:
+                    logger.debug(f"Could not delete local feed {loc_f}: {e}")
+
+        if self.config.dry_run or not self.s3_client:
+            logger.info(f"[DRY RUN] Simulating removal of feed XML for [{channel_id}] (Audio files strictly preserved)")
+            return True
+
+        success = True
+        for key in keys_to_remove:
+            try:
+                self.s3_client.delete_object(
+                    Bucket=self.config.r2_bucket_name,
+                    Key=key,
+                )
+                logger.info(f"[{channel_id}] Removed feed XML from R2: {key}")
+            except Exception as e:
+                logger.warning(f"[{channel_id}] Could not delete {key} from R2: {e}")
+                success = False
+
+        return success
+
 
 

@@ -101,8 +101,8 @@ class Config:
         output_dir_str = os.environ.get("OUTPUT_DIR", "./output").strip()
         public_url = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
 
-        # Load channels
-        channels: List[ChannelConfig] = []
+        # Load channels from channels.json
+        json_channels: List[ChannelConfig] = []
         if channels_file is None:
             channels_file = Path("channels.json")
 
@@ -113,16 +113,36 @@ class Config:
                     if isinstance(items, list):
                         for item in items:
                             if isinstance(item, dict) and item.get("url"):
-                                channels.append(ChannelConfig.from_dict(item))
+                                json_channels.append(ChannelConfig.from_dict(item))
             except Exception as e:
                 print(f"Warning: Failed to parse {channels_file}: {e}")
 
-        # Auto-discover any channels passed via environment variables (e.g. YOUTUBE_CHANNEL_URL, YOUTUBE_CHANNEL_URL_2, etc.)
-        existing_urls = {urllib.parse.unquote(ch.url).lower().rstrip("/") for ch in channels}
-        for env_key, env_val in os.environ.items():
-            if env_key.startswith("YOUTUBE_CHANNEL_URL") and env_val.strip():
-                url_val = env_val.strip()
-                if urllib.parse.unquote(url_val).lower().rstrip("/") not in existing_urls:
+        # Check if active channels are configured via GitHub Secrets / environment variables
+        env_channel_items = [
+            (env_key, env_val.strip())
+            for env_key, env_val in os.environ.items()
+            if env_key.startswith("YOUTUBE_CHANNEL_URL") and env_val.strip()
+        ]
+
+        if env_channel_items:
+            # When Secrets are provided, Secrets act as the authoritative list of active channels!
+            channels: List[ChannelConfig] = []
+            json_by_norm_url = {
+                urllib.parse.unquote(ch.url).lower().rstrip("/"): ch
+                for ch in json_channels
+            }
+            seen_urls = set()
+
+            for env_key, url_val in env_channel_items:
+                norm_url = urllib.parse.unquote(url_val).lower().rstrip("/")
+                if norm_url in seen_urls:
+                    continue
+                seen_urls.add(norm_url)
+
+                if norm_url in json_by_norm_url:
+                    # Inherit metadata (custom id, name, category) from channels.json
+                    channels.append(json_by_norm_url[norm_url])
+                else:
                     raw_id = "channel"
                     if "@" in url_val:
                         raw_id = url_val.split("@")[-1].split("/")[0].split("?")[0]
@@ -141,7 +161,8 @@ class Config:
                             language=os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
                         )
                     )
-                    existing_urls.add(url_val.lower().rstrip("/"))
+        else:
+            channels = json_channels
 
         return cls(
             channels=channels,

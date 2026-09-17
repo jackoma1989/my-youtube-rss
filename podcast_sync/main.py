@@ -233,6 +233,24 @@ def sync():
         except Exception as e:
             logger.error(f"Failed to sync channel [{channel_cfg.id}]: {e}", exc_info=True)
 
+    # Reconcile unsubscribed channels: detect channels previously active on R2 but now removed from config
+    unsubscribed_results = []
+    if not args.channel_id:
+        try:
+            persisted_channel_ids = storage.list_persisted_channels()
+            active_channel_ids = {ch.id for ch in channels_to_process}
+            unsubscribed_ids = sorted(persisted_channel_ids - active_channel_ids)
+
+            for unsub_id in unsubscribed_ids:
+                logger.warning(
+                    f"[{unsub_id}] Channel is no longer in active configuration (Secret removed). "
+                    f"Clearing feed XML while strictly preserving R2 audio files."
+                )
+                storage.remove_channel_feed(unsub_id)
+                unsubscribed_results.append(unsub_id)
+        except Exception as e:
+            logger.warning(f"Error checking unsubscribed channels: {e}")
+
     logger.info("=== All Channels Sync Completed ===")
     print("\n" + "=" * 65)
     print("【播客专属订阅源列表 (Apple Podcasts Feeds)】")
@@ -242,6 +260,16 @@ def sync():
         print(f"  - 新增集数: {r['new']} | 总期数: {r['total']}")
         print(f"  - 订阅链接: {r['feed_url']}")
         print("-" * 65)
+
+    if unsubscribed_results:
+        print("\n" + "=" * 65)
+        print("【已退订/下架频道列表 (Unsubscribed Channels)】")
+        print("=" * 65)
+        for unsub_id in unsubscribed_results:
+            print(f"频道 ID: [{unsub_id}]")
+            print(f"  - 订阅状态: 已下架 (已从 R2 清理 {unsub_id}.xml)")
+            print(f"  - 音频存储: 已完整保留 audio/{unsub_id}/ 下全部文件供您自行处理")
+            print("-" * 65)
 
 
 if __name__ == "__main__":

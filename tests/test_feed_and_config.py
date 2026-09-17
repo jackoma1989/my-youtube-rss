@@ -201,6 +201,69 @@ class TestPodcastSync(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_podcast_rss("<rss><unclosed>", channel_id="test_ch")
 
+    def test_env_secret_precedence(self):
+        import os
+        # channels.json has 2 channels
+        data = [
+            {"id": "channel1", "url": "https://www.youtube.com/@ch1", "name": "Channel 1"},
+            {"id": "channel2", "url": "https://www.youtube.com/@ch2", "name": "Channel 2"},
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(data, tmp)
+            tmp_path = Path(tmp.name)
+
+        orig_env = dict(os.environ)
+        try:
+            # User only has YOUTUBE_CHANNEL_URL for ch1 (ch2 deleted from secret)
+            os.environ["YOUTUBE_CHANNEL_URL"] = "https://www.youtube.com/@ch1"
+            if "YOUTUBE_CHANNEL_URL_2" in os.environ:
+                del os.environ["YOUTUBE_CHANNEL_URL_2"]
+
+            cfg = Config.from_env(channels_file=tmp_path)
+            # Only ch1 should be active
+            self.assertEqual(len(cfg.channels), 1)
+            self.assertEqual(cfg.channels[0].id, "channel1")
+            self.assertEqual(cfg.channels[0].name, "Channel 1")
+        finally:
+            os.environ.clear()
+            os.environ.update(orig_env)
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    def test_unsubscribed_feed_removal_preserves_audio(self):
+        from podcast_sync.storage import StorageManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            cfg = Config(dry_run=True, output_dir=tmp_path)
+            storage = StorageManager(cfg)
+
+            ch_dir = tmp_path / "dashibingfa"
+            ch_dir.mkdir(parents=True, exist_ok=True)
+            manifest_file = ch_dir / "episodes.json"
+            manifest_file.write_text("[]", encoding="utf-8")
+
+            # Feed XML
+            feed_file = tmp_path / "dashibingfa.xml"
+            feed_file.write_text("<rss></rss>", encoding="utf-8")
+
+            # Audio file
+            audio_dir = tmp_path / "audio" / "dashibingfa"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            audio_file = audio_dir / "episode1.m4a"
+            audio_file.write_text("fake audio content", encoding="utf-8")
+
+            # 1. list_persisted_channels detects dashibingfa
+            persisted = storage.list_persisted_channels()
+            self.assertIn("dashibingfa", persisted)
+
+            # 2. remove_channel_feed removes dashibingfa.xml
+            storage.remove_channel_feed("dashibingfa")
+            self.assertFalse(feed_file.exists())
+
+            # 3. Audio file and manifest are strictly PRESERVED!
+            self.assertTrue(audio_file.exists())
+            self.assertTrue(manifest_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
