@@ -1,8 +1,8 @@
 # YouTube 频道自动转苹果播客 (YouTube to Apple Podcasts Sync)
 
-全自动、零服务器成本的 Serverless 流水线：利用 **GitHub Actions** 定时抓取指定 YouTube 频道的最新视频，使用 `yt-dlp` 极速抽取原生高品质 AAC 音频（M4A 格式），上传至 **Cloudflare R2**（每月 10GB 免费存储且完全免出站流量费），并生成符合 Apple 官方规范的播客 RSS `feed.xml`。
+全自动、零服务器成本的 Serverless 流水线：利用 **GitHub Actions** 定时抓取指定 YouTube 频道的最新视频，使用 `yt-dlp` 极速抽取原生高品质 AAC 音频（M4A 格式）与 **精准中/英文字幕（WebVTT 格式）**，上传至 **Cloudflare R2**（每月 10GB 免费存储且完全免出站流量费），并生成符合 Apple 官方规范的播客 RSS `feed.xml`（遵循 Podcasting 2.0 `<podcast:transcript>` 规范）。
 
-可在 iPhone / iPad / Mac 的“播客 (Apple Podcasts)”或任何泛用型播客客户端中直接订阅。
+可在 iPhone / iPad / Mac 的“播客 (Apple Podcasts)”或任何泛用型播客客户端中直接订阅，支持**实时动感歌词字幕滚动、点击字幕跳播与全文检索**！
 
 ---
 
@@ -15,12 +15,14 @@ YouTube 目标频道
 GitHub Actions (免费云端 Runner)
        │
        ├─► 提取原生 AAC 音频流 (140) -> 存储为 .m4a
+       ├─► 提取高精度中/英文字幕 (VTT) -> 存储为 .vtt (自动补全存量单集)
        ├─► 上传至 Cloudflare R2 (支持 HTTP Range 断点续传)
-       ├─► 自动清理超出保留上限的旧期数音频 (控制在 10GB 免费额度内)
-       └─► 生成并更新标准的 feed.xml
+       ├─► 自动清理超出保留上限的旧期数音频与字幕 (控制在 10GB 免费额度内)
+       └─► 生成并更新带 <podcast:transcript> 的 feed.xml
                │
                ▼
-   苹果播客 (Apple Podcasts) 输入 RSS URL 订阅收听
+   苹果播客 (Apple Podcasts iOS 17.4+)
+   [音频播放 + 实时字幕逐句高亮滚动 + 单词点击跳转]
 ```
 
 ---

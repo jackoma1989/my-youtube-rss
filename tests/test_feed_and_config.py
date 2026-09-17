@@ -327,6 +327,159 @@ class TestPodcastSync(unittest.TestCase):
         src = inspect.getsource(YouTubeFetcher.download_audio_for_video)
         self.assertIn("ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best", src)
 
+    def test_transcript_data_model_and_rss(self):
+        from podcast_sync.feed import PodcastTranscript
+
+        t_zh = PodcastTranscript(
+            url="https://podcast.hemajia.fun/transcripts/wangzhian/v123.zh-Hans.vtt",
+            type="text/vtt",
+            language="zh-CN",
+            rel="captions",
+        )
+        t_en = PodcastTranscript(
+            url="https://podcast.hemajia.fun/transcripts/wangzhian/v123.en.vtt",
+            type="text/vtt",
+            language="en",
+            rel="captions",
+        )
+
+        ep = PodcastEpisode(
+            video_id="v123",
+            title="Episode with Transcripts",
+            description="Testing transcripts",
+            pub_date=datetime(2026, 9, 17, 10, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=120,
+            audio_filename="audio/wangzhian/v123.m4a",
+            audio_url="https://podcast.hemajia.fun/audio/wangzhian/v123.m4a",
+            file_size_bytes=100000,
+            transcripts=[t_zh, t_en],
+        )
+
+        # 1. Test serialization and deserialization
+        d = ep.to_dict()
+        self.assertIn("transcripts", d)
+        self.assertEqual(len(d["transcripts"]), 2)
+        self.assertEqual(d["transcripts"][0]["language"], "zh-CN")
+
+        restored_ep = PodcastEpisode.from_dict(d)
+        self.assertEqual(len(restored_ep.transcripts), 2)
+        self.assertEqual(restored_ep.transcripts[0].url, t_zh.url)
+
+        # 2. Test backward compatibility when transcripts field is missing
+        del d["transcripts"]
+        legacy_ep = PodcastEpisode.from_dict(d)
+        self.assertEqual(legacy_ep.transcripts, [])
+
+        # 3. Test RSS XML generation contains <podcast:transcript>
+        ch = PodcastChannel(
+            title="Test Show",
+            link="https://www.youtube.com/@wangzhian",
+            description="Description",
+            author="Host",
+            image_url="https://podcast.hemajia.fun/cover.jpg",
+            episodes=[ep],
+        )
+        xml_output = generate_podcast_rss(ch)
+        self.assertIn("xmlns:podcast=\"https://podcastindex.org/namespace/1.0\"", xml_output)
+        self.assertIn("<podcast:transcript", xml_output)
+        self.assertIn("url=\"https://podcast.hemajia.fun/transcripts/wangzhian/v123.zh-Hans.vtt\"", xml_output)
+        self.assertIn("type=\"text/vtt\"", xml_output)
+        self.assertIn("language=\"zh-CN\"", xml_output)
+
+        # 4. Test RSS validation succeeds
+        val_res = validate_podcast_rss(xml_output, channel_id="wangzhian", expected_count=1)
+        self.assertTrue(val_res["valid"])
+
+    def test_transcript_storage_operations(self):
+        from podcast_sync.storage import StorageManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            cfg = Config(dry_run=True, output_dir=tmp_path, r2_public_url="https://podcast.hemajia.fun")
+            storage = StorageManager(cfg)
+
+            dummy_vtt = tmp_path / "v123.zh-Hans.vtt"
+            dummy_vtt.write_text("WEBVTT\n00:00:00.000 --> 00:00:05.000\nHello", encoding="utf-8")
+
+            url = storage.upload_transcript(dummy_vtt, "wangzhian", "v123", "zh-Hans")
+            self.assertEqual(url, "https://podcast.hemajia.fun/transcripts/wangzhian/v123.zh-Hans.vtt")
+
+    def test_youtube_subtitle_normalization(self):
+        from podcast_sync.youtube import YouTubeFetcher
+        cfg = Config(dry_run=True)
+        yt = YouTubeFetcher(cfg)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            (tmp_path / "vid1.zh-Hans.vtt").write_text("WEBVTT", encoding="utf-8")
+            (tmp_path / "vid1.en.vtt").write_text("WEBVTT", encoding="utf-8")
+            (tmp_path / "vid1.zh-Hant.vtt").write_text("WEBVTT", encoding="utf-8")
+
+            subs = yt._find_and_normalize_subtitles("vid1", tmp_path)
+            langs = [s["language"] for s in subs]
+            self.assertIn("zh-CN", langs)
+            self.assertIn("en", langs)
+            self.assertIn("zh-TW", langs)
+            # zh-CN should be sorted first
+            self.assertEqual(subs[0]["language"], "zh-CN")
+
+    def test_subtitle_backfill_in_sync_single_channel(self):
+        from unittest.mock import MagicMock
+        from podcast_sync.main import sync_single_channel
+        from podcast_sync.storage import StorageManager
+        from podcast_sync.youtube import YouTubeFetcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            cfg = Config(dry_run=True, output_dir=tmp_path, r2_public_url="https://podcast.hemajia.fun")
+            channel_cfg = ChannelConfig(id="testch", url="https://www.youtube.com/@testch")
+
+            # Create an existing episode with NO transcripts
+            existing_ep = PodcastEpisode(
+                video_id="existing_1",
+                title="Existing Episode",
+                description="Desc",
+                pub_date=datetime(2026, 9, 17, 8, 0, 0, tzinfo=timezone.utc),
+                duration_seconds=180,
+                audio_filename="audio/testch/existing_1.m4a",
+                audio_url="https://podcast.hemajia.fun/audio/testch/existing_1.m4a",
+                file_size_bytes=5000,
+                transcripts=[],
+            )
+
+            # Mock storage
+            storage = StorageManager(cfg)
+            storage.load_episodes_manifest = MagicMock(return_value=[existing_ep])
+            storage.load_ignored_videos = MagicMock(return_value={})
+            storage.cleanup_orphan_and_expired_audio = MagicMock()
+            storage.cleanup_orphan_and_expired_transcripts = MagicMock()
+            storage.save_episodes_manifest = MagicMock()
+            storage.upload_channel_feed = MagicMock(return_value="https://podcast.hemajia.fun/testch.xml")
+
+            # Mock youtube
+            yt = YouTubeFetcher(cfg)
+            yt.get_channel_info_and_entries = MagicMock(return_value=(
+                {"title": "Test Show", "link": "https://www.youtube.com/@testch", "description": "Desc", "author": "Host", "image_url": ""},
+                [{"id": "existing_1", "title": "Existing Episode"}]
+            ))
+
+            # When backfill is called, return a dummy subtitle
+            dummy_vtt = tmp_path / "existing_1.zh-Hans.vtt"
+            dummy_vtt.write_text("WEBVTT\n00:00:01.000 --> 00:00:04.000\nHello", encoding="utf-8")
+            yt.fetch_subtitles_for_video = MagicMock(return_value=[{
+                "language": "zh-CN",
+                "lang_suffix": "zh-Hans",
+                "local_vtt_path": dummy_vtt,
+            }])
+
+            res = sync_single_channel(channel_cfg, cfg, storage, yt)
+            self.assertEqual(res["total"], 1)
+            # Verify subtitles were backfilled onto the existing episode!
+            self.assertEqual(len(existing_ep.transcripts), 1)
+            self.assertEqual(existing_ep.transcripts[0].language, "zh-CN")
+            self.assertIn("existing_1.zh-Hans.vtt", existing_ep.transcripts[0].url)
+            # Verify manifest was saved
+            storage.save_episodes_manifest.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

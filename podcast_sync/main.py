@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import ChannelConfig, Config
-from .feed import PodcastChannel, PodcastEpisode, generate_podcast_rss, validate_podcast_rss
+from .feed import PodcastChannel, PodcastEpisode, PodcastTranscript, generate_podcast_rss, validate_podcast_rss
 from .notifier import send_new_episode_notification
 from .storage import StorageManager
 from .youtube import YouTubeFetcher
@@ -73,6 +73,34 @@ def sync_single_channel(
             # Upload audio to Cloudflare R2 under audio/{channel_id}/{video_id}.m4a
             public_audio_url = storage.upload_audio(local_path, channel_id, video_id)
 
+            # Upload any downloaded subtitles for this new video
+            transcripts = []
+            for t_meta in download_meta.get("transcripts_meta", []):
+                t_local = t_meta["local_vtt_path"]
+                if t_local.exists():
+                    try:
+                        t_url = storage.upload_transcript(
+                            local_path=t_local,
+                            channel_id=channel_id,
+                            video_id=video_id,
+                            lang_suffix=t_meta["lang_suffix"],
+                        )
+                        transcripts.append(
+                            PodcastTranscript(
+                                url=t_url,
+                                type="text/vtt",
+                                language=t_meta["language"],
+                                rel="captions",
+                            )
+                        )
+                    except Exception as te:
+                        logger.warning(f"[{channel_id}] Could not upload transcript {t_local.name}: {te}")
+                    finally:
+                        try:
+                            t_local.unlink()
+                        except Exception:
+                            pass
+
             episode = PodcastEpisode(
                 video_id=video_id,
                 title=download_meta["title"],
@@ -84,6 +112,7 @@ def sync_single_channel(
                 file_size_bytes=download_meta["file_size_bytes"],
                 thumbnail_url=download_meta["thumbnail_url"],
                 webpage_url=download_meta["webpage_url"],
+                transcripts=transcripts,
             )
             updated_episodes.append(episode)
             new_episodes.append(episode)
@@ -135,14 +164,57 @@ def sync_single_channel(
     retained_episodes = updated_episodes[: channel_cfg.max_episodes]
     expired_episodes = updated_episodes[channel_cfg.max_episodes :]
 
-    # 5. Clean up expired episodes from R2
+    # 4.5 Subtitle backfill: automatically supplement missing subtitles for existing episodes (zero audio redownload)
+    backfilled_episodes = 0
+    for ep in retained_episodes:
+        if not ep.transcripts:
+            logger.info(f"[{channel_id}] Supplementing missing subtitles for [{ep.video_id}] {ep.title}...")
+            try:
+                sub_metas = yt.fetch_subtitles_for_video(ep.video_id, config.output_dir / channel_id)
+                for sm in sub_metas:
+                    t_local = sm["local_vtt_path"]
+                    if t_local.exists():
+                        try:
+                            t_url = storage.upload_transcript(
+                                local_path=t_local,
+                                channel_id=channel_id,
+                                video_id=ep.video_id,
+                                lang_suffix=sm["lang_suffix"],
+                            )
+                            ep.transcripts.append(
+                                PodcastTranscript(
+                                    url=t_url,
+                                    type="text/vtt",
+                                    language=sm["language"],
+                                    rel="captions",
+                                )
+                            )
+                        except Exception as te:
+                            logger.warning(f"[{channel_id}] Failed uploading backfilled transcript: {te}")
+                        finally:
+                            try:
+                                t_local.unlink()
+                            except Exception:
+                                pass
+                if ep.transcripts:
+                    backfilled_episodes += 1
+                    logger.info(f"[{channel_id}] ✓ Subtitles backfilled for [{ep.video_id}]: {[t.language for t in ep.transcripts]}")
+            except Exception as e:
+                logger.warning(f"[{channel_id}] Subtitle backfill failed for [{ep.video_id}]: {e}")
+
+    if backfilled_episodes > 0:
+        logger.info(f"[{channel_id}] Subtitle backfill complete: supplemented {backfilled_episodes} episode(s).")
+
+    # 5. Clean up expired episodes and transcripts from R2
     if expired_episodes:
         logger.info(f"[{channel_id}] Pruning {len(expired_episodes)} expired episodes from R2...")
         for exp_ep in expired_episodes:
             storage.delete_audio(channel_id, exp_ep.video_id)
+            storage.delete_transcripts(channel_id, exp_ep.video_id)
 
-    # Active bucket reconciliation: ensure R2 audio folder strictly contains ONLY retained episodes
+    # Active bucket reconciliation: ensure R2 audio & transcript folders strictly contain ONLY retained episodes
     storage.cleanup_orphan_and_expired_audio(channel_id, retained_episodes)
+    storage.cleanup_orphan_and_expired_transcripts(channel_id, retained_episodes)
 
     # 6. Save manifest
     storage.save_episodes_manifest(channel_id, retained_episodes)

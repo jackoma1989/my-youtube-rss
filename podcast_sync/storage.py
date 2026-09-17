@@ -242,6 +242,72 @@ class StorageManager:
             except Exception as e:
                 logger.debug(f"Could not delete {key}: {e}")
 
+    def upload_transcript(self, local_path: Path, channel_id: str, video_id: str, lang_suffix: str) -> str:
+        """Upload a WebVTT transcript file to R2 under transcripts/{channel_id}/{video_id}.{lang_suffix}.vtt."""
+        filename = f"transcripts/{channel_id}/{video_id}.{lang_suffix}.vtt"
+        public_url = f"{self.config.r2_public_url}/{filename}"
+
+        if self.config.dry_run:
+            logger.info(f"[DRY RUN] Simulating upload of transcript {local_path} -> {public_url}")
+            return public_url
+
+        logger.info(f"Uploading transcript {local_path.name} to R2 as {filename}...")
+        self.s3_client.upload_file(
+            Filename=str(local_path),
+            Bucket=self.config.r2_bucket_name,
+            Key=filename,
+            ExtraArgs={
+                "ContentType": "text/vtt; charset=utf-8",
+                "CacheControl": "public, max-age=31536000, immutable",
+            },
+        )
+        logger.info(f"Transcript upload complete: {public_url}")
+        return public_url
+
+    def delete_transcripts(self, channel_id: str, video_id: str) -> None:
+        """Delete any transcript files associated with video_id from R2."""
+        if self.config.dry_run or not self.s3_client:
+            return
+
+        prefix = f"transcripts/{channel_id}/{video_id}."
+        try:
+            response = self.s3_client.list_objects_v2(Bucket=self.config.r2_bucket_name, Prefix=prefix)
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)
+                logger.info(f"Deleted expired transcript from R2: {key}")
+        except Exception as e:
+            logger.debug(f"Could not delete transcripts for {video_id}: {e}")
+
+    def cleanup_orphan_and_expired_transcripts(self, channel_id: str, retained_episodes: List[PodcastEpisode]) -> int:
+        """Purge any transcript files in transcripts/{channel_id}/ that do not belong to retained episodes."""
+        if self.config.dry_run or not self.s3_client:
+            return 0
+
+        retained_ids = {ep.video_id for ep in retained_episodes}
+        prefix = f"transcripts/{channel_id}/"
+        deleted_count = 0
+
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.config.r2_bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    filename = key.split("/")[-1]
+                    if not filename.endswith(".vtt"):
+                        continue
+                    vid = filename.split(".")[0]
+                    if vid not in retained_ids:
+                        logger.info(f"[{channel_id}] Pruning expired transcript from R2: {key}")
+                        self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)
+                        deleted_count += 1
+        except Exception as e:
+            logger.warning(f"[{channel_id}] Error reconciling transcripts folder: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"[{channel_id}] Reconciled R2 transcripts: purged {deleted_count} files.")
+        return deleted_count
+
     def cleanup_orphan_and_expired_audio(self, channel_id: str, retained_episodes: List[PodcastEpisode]) -> int:
         """
         List all audio files in audio/{channel_id}/ on R2,

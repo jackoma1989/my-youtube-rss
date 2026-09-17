@@ -117,8 +117,90 @@ class YouTubeFetcher:
         logger.info(f"Found {len(entries)} recent videos for [{channel_config.id}] {channel_title}")
         return channel_info, entries
 
+    def _find_and_normalize_subtitles(self, video_id: str, output_dir: Path) -> List[dict]:
+        """Find downloaded VTT files for video_id, map to BCP-47 and clean names."""
+        vtt_files = list(output_dir.glob(f"{video_id}.*.vtt"))
+        results = []
+        seen_langs = set()
+
+        def _sort_key(p: Path):
+            name = p.name.lower()
+            if "zh-hans" in name or "zh-cn" in name:
+                return 0
+            if "zh-hant" in name or "zh-tw" in name:
+                return 1
+            if ".zh." in name:
+                return 2
+            if ".en" in name:
+                return 3
+            return 4
+
+        for vtt_path in sorted(vtt_files, key=_sort_key):
+            fname = vtt_path.name
+            parts = fname.replace(".vtt", "").split(".")
+            lang_raw = parts[-1] if len(parts) > 1 else "zh"
+            lang_lower = lang_raw.lower()
+
+            if "zh-hans" in lang_lower or "zh-cn" in lang_lower:
+                norm_lang = "zh-CN"
+                suffix = "zh-Hans"
+            elif "zh-hant" in lang_lower or "zh-tw" in lang_lower:
+                norm_lang = "zh-TW"
+                suffix = "zh-Hant"
+            elif "zh" in lang_lower:
+                norm_lang = "zh-CN"
+                suffix = "zh"
+            elif "en" in lang_lower:
+                norm_lang = "en"
+                suffix = "en"
+            else:
+                norm_lang = lang_raw
+                suffix = lang_raw
+
+            if norm_lang in seen_langs:
+                continue
+            seen_langs.add(norm_lang)
+
+            results.append({
+                "language": norm_lang,
+                "lang_suffix": suffix,
+                "local_vtt_path": vtt_path,
+            })
+        return results
+
+    def fetch_subtitles_for_video(self, video_id: str, output_dir: Path) -> List[dict]:
+        """Download only subtitles for a video (no audio/video) in seconds."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        out_template = str(output_dir / f"{video_id}.%(ext)s")
+
+        ydl_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["zh-Hans", "zh-CN", "zh", "zh-Hant", "zh-TW", "en", "en-US"],
+            "subtitlesformat": "vtt",
+            "outtmpl": out_template,
+            "js_runtimes": {"node": {}},
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
+        }
+        if self._cookie_file and os.path.exists(self._cookie_file):
+            ydl_opts["cookiefile"] = self._cookie_file
+
+        logger.info(f"Fetching subtitles for [{video_id}]...")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(video_url, download=True)
+        except Exception as e:
+            logger.warning(f"Failed to fetch subtitles for [{video_id}]: {e}")
+            return []
+
+        return self._find_and_normalize_subtitles(video_id, output_dir)
+
     def download_audio_for_video(self, video_id: str, output_dir: Path) -> dict:
-        """Download audio for a single video using yt-dlp."""
+        """Download audio and subtitles for a single video using yt-dlp."""
         output_dir.mkdir(parents=True, exist_ok=True)
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         out_template = str(output_dir / f"{video_id}.%(ext)s")
@@ -127,6 +209,10 @@ class YouTubeFetcher:
         ydl_opts = {
             "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
             "outtmpl": out_template,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["zh-Hans", "zh-CN", "zh", "zh-Hant", "zh-TW", "en", "en-US"],
+            "subtitlesformat": "vtt",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -141,15 +227,17 @@ class YouTubeFetcher:
         if self._cookie_file and os.path.exists(self._cookie_file):
             ydl_opts["cookiefile"] = self._cookie_file
 
-        logger.info(f"Downloading audio for {video_id} -> {target_audio_file}")
+        logger.info(f"Downloading audio and subtitles for {video_id} -> {target_audio_file}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
 
         if not target_audio_file.exists():
             candidates = list(output_dir.glob(f"{video_id}.*"))
-            if not candidates:
+            # Exclude .vtt files when looking for audio candidates
+            audio_candidates = [c for c in candidates if c.suffix != ".vtt"]
+            if not audio_candidates:
                 raise FileNotFoundError(f"Audio download failed for {video_id}, file not found")
-            target_audio_file = candidates[0]
+            target_audio_file = audio_candidates[0]
 
         pub_dt = None
         if info.get("timestamp"):
@@ -165,6 +253,7 @@ class YouTubeFetcher:
         thumbnails = info.get("thumbnails") or []
         thumb_url = thumbnails[-1].get("url") if thumbnails else info.get("thumbnail")
         file_size = target_audio_file.stat().st_size
+        transcripts_meta = self._find_and_normalize_subtitles(video_id, output_dir)
 
         return {
             "video_id": video_id,
@@ -176,4 +265,5 @@ class YouTubeFetcher:
             "file_size_bytes": file_size,
             "thumbnail_url": thumb_url,
             "webpage_url": info.get("webpage_url") or video_url,
+            "transcripts_meta": transcripts_meta,
         }

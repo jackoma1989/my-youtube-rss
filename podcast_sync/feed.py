@@ -7,6 +7,33 @@ from typing import List, Optional
 
 
 @dataclass
+class PodcastTranscript:
+    url: str
+    type: str = "text/vtt"
+    language: str = "zh-CN"
+    rel: Optional[str] = "captions"
+
+    def to_dict(self) -> dict:
+        d = {
+            "url": self.url,
+            "type": self.type,
+            "language": self.language,
+        }
+        if self.rel:
+            d["rel"] = self.rel
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PodcastTranscript":
+        return cls(
+            url=d["url"],
+            type=d.get("type", "text/vtt"),
+            language=d.get("language", "zh-CN"),
+            rel=d.get("rel", "captions"),
+        )
+
+
+@dataclass
 class PodcastEpisode:
     video_id: str
     title: str
@@ -18,6 +45,11 @@ class PodcastEpisode:
     file_size_bytes: int
     thumbnail_url: Optional[str] = None
     webpage_url: Optional[str] = None
+    transcripts: List[PodcastTranscript] = None
+
+    def __post_init__(self):
+        if self.transcripts is None:
+            self.transcripts = []
 
     def to_dict(self) -> dict:
         return {
@@ -31,10 +63,13 @@ class PodcastEpisode:
             "file_size_bytes": self.file_size_bytes,
             "thumbnail_url": self.thumbnail_url,
             "webpage_url": self.webpage_url,
+            "transcripts": [t.to_dict() for t in self.transcripts] if self.transcripts else [],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "PodcastEpisode":
+        raw_transcripts = d.get("transcripts") or []
+        transcripts = [PodcastTranscript.from_dict(t) for t in raw_transcripts if isinstance(t, dict)]
         return cls(
             video_id=d["video_id"],
             title=d["title"],
@@ -46,6 +81,7 @@ class PodcastEpisode:
             file_size_bytes=int(d.get("file_size_bytes", 0)),
             thumbnail_url=d.get("thumbnail_url"),
             webpage_url=d.get("webpage_url"),
+            transcripts=transcripts,
         )
 
 
@@ -80,9 +116,11 @@ def generate_podcast_rss(channel: PodcastChannel) -> str:
     """Generate an Apple Podcasts-compliant RSS 2.0 XML string."""
     ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
     CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
+    PODCAST_NS = "https://podcastindex.org/namespace/1.0"
 
     ET.register_namespace("itunes", ITUNES_NS)
     ET.register_namespace("content", CONTENT_NS)
+    ET.register_namespace("podcast", PODCAST_NS)
 
     rss = ET.Element("rss", {"version": "2.0"})
 
@@ -163,6 +201,17 @@ def generate_podcast_rss(channel: PodcastChannel) -> str:
         if ep.thumbnail_url:
             ET.SubElement(item, f"{{{ITUNES_NS}}}image", {"href": ep.thumbnail_url})
 
+        # Transcripts (Apple Podcasts & Podcasting 2.0 WebVTT)
+        for tr in (ep.transcripts or []):
+            attrs = {
+                "url": tr.url,
+                "type": tr.type or "text/vtt",
+                "language": tr.language or "zh-CN",
+            }
+            if tr.rel:
+                attrs["rel"] = tr.rel
+            ET.SubElement(item, f"{{{PODCAST_NS}}}transcript", attrs)
+
     # Return pretty formatted XML with standard header
     rough_string = ET.tostring(rss, encoding="utf-8")
     reparsed = minidom.parseString(rough_string)
@@ -233,6 +282,17 @@ def validate_podcast_rss(
             raise ValueError(
                 f"[{channel_id}] Enclosure URL validation failed: '{audio_url}' does not contain '{expected_audio_prefix}'!"
             )
+
+        # Validate transcripts if present
+        PODCAST_NS = "https://podcastindex.org/namespace/1.0"
+        transcripts = item.findall(f"{{{PODCAST_NS}}}transcript")
+        for tr_idx, tr in enumerate(transcripts):
+            tr_url = tr.attrib.get("url", "")
+            tr_type = tr.attrib.get("type", "")
+            if not tr_url:
+                raise ValueError(f"[{channel_id}] Item #{idx} transcript #{tr_idx+1} is missing 'url'.")
+            if tr_type not in ("text/vtt", "application/srt", "text/plain", "text/html"):
+                raise ValueError(f"[{channel_id}] Item #{idx} transcript #{tr_idx+1} invalid type: '{tr_type}'.")
 
     return {
         "valid": True,

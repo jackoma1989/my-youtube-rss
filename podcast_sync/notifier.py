@@ -99,6 +99,7 @@ def send_new_episode_notification(
         f"🎬 <b>单集</b>: {safe_title}",
         f"⏱️ <b>时长</b>: {duration_str}",
         f"📅 <b>发布</b>: {pub_str}",
+        f"📝 <b>字幕</b>: {'已就绪 (' + ', '.join([t.language for t in episode.transcripts]) + ')' if getattr(episode, 'transcripts', None) else '暂无'}",
         "",
     ]
     if feed_url:
