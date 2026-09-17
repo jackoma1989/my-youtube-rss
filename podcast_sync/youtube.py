@@ -125,7 +125,7 @@ class YouTubeFetcher:
         target_audio_file = output_dir / f"{video_id}.m4a"
 
         ydl_opts = {
-            "format": "bestaudio/best",
+            "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
             "outtmpl": out_template,
             "postprocessors": [
                 {

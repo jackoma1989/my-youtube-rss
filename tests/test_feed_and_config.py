@@ -264,6 +264,69 @@ class TestPodcastSync(unittest.TestCase):
             self.assertTrue(audio_file.exists())
             self.assertTrue(manifest_file.exists())
 
+    def test_telegram_notification_formatting_and_fallback(self):
+        from unittest.mock import patch, MagicMock
+        import io
+        from podcast_sync.notifier import send_new_episode_notification, send_telegram_message
+
+        ep = PodcastEpisode(
+            video_id="test1234",
+            title="<Special> Episode & Title",
+            description="Sample",
+            pub_date=datetime(2026, 9, 17, 10, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=3665,
+            audio_filename="audio/wangzhian/test1234.m4a",
+            audio_url="https://podcast.example.com/audio/wangzhian/test1234.m4a",
+            file_size_bytes=123456,
+            thumbnail_url="",
+            webpage_url="https://www.youtube.com/watch?v=test1234",
+        )
+
+        # 1. Test empty credentials returns None safely
+        self.assertIsNone(send_new_episode_notification("", "", "王局", ep))
+
+        # 2. Test successful delivery
+        fake_response = MagicMock()
+        fake_response.read.return_value = json.dumps({"ok": True, "result": {"message_id": 999}}).encode("utf-8")
+        fake_response.__enter__.return_value = fake_response
+
+        with patch("urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+            res = send_new_episode_notification(
+                bot_token="fake_token",
+                chat_id="fake_chat",
+                channel_title="王局拍案",
+                episode=ep,
+                feed_url="https://podcast.hemajia.fun/wangzhian.xml",
+            )
+            self.assertIsNotNone(res)
+            self.assertTrue(res.get("ok"))
+            self.assertEqual(mock_urlopen.call_count, 1)
+
+            # Inspect request payload
+            req = mock_urlopen.call_args[0][0]
+            req_data = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(req_data["chat_id"], "fake_chat")
+            self.assertEqual(req_data["parse_mode"], "HTML")
+            self.assertIn("&lt;Special&gt; Episode &amp; Title", req_data["text"])
+            self.assertIn("01:01:05", req_data["text"])
+            self.assertIn("https://podcast.hemajia.fun/wangzhian.xml", req_data["text"])
+
+        # 3. Test fallback to plain text when HTML fails
+        with patch("urllib.request.urlopen", side_effect=[Exception("400 Bad Request"), fake_response]) as mock_retry:
+            res = send_telegram_message("fake_token", "fake_chat", "test text")
+            self.assertIsNotNone(res)
+            self.assertEqual(mock_retry.call_count, 2)
+            # Second call should not have parse_mode
+            fallback_req = mock_retry.call_args_list[1][0][0]
+            fallback_data = json.loads(fallback_req.data.decode("utf-8"))
+            self.assertNotIn("parse_mode", fallback_data)
+
+    def test_youtube_format_prioritizes_native_m4a(self):
+        import inspect
+        from podcast_sync.youtube import YouTubeFetcher
+        src = inspect.getsource(YouTubeFetcher.download_audio_for_video)
+        self.assertIn("ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best", src)
+
 
 if __name__ == "__main__":
     unittest.main()

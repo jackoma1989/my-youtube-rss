@@ -77,6 +77,10 @@ class Config:
     r2_bucket_name: str = ""
     r2_public_url: str = ""  # e.g., https://podcast.hemajia.fun (no trailing slash)
 
+    # Telegram Notifications (optional)
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+
     # Execution Options
     dry_run: bool = False
     output_dir: Path = field(default_factory=lambda: Path("./output"))
@@ -171,6 +175,8 @@ class Config:
             r2_secret_access_key=os.environ.get("R2_SECRET_ACCESS_KEY", "").strip(),
             r2_bucket_name=os.environ.get("R2_BUCKET_NAME", "").strip(),
             r2_public_url=public_url,
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None,
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None,
             dry_run=get_bool("DRY_RUN", False),
             output_dir=Path(output_dir_str),
             youtube_cookies=os.environ.get("YOUTUBE_COOKIES", "").strip() or None,

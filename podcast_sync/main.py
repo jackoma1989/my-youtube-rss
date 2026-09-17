@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import ChannelConfig, Config
 from .feed import PodcastChannel, PodcastEpisode, generate_podcast_rss, validate_podcast_rss
+from .notifier import send_new_episode_notification
 from .storage import StorageManager
 from .youtube import YouTubeFetcher
 
@@ -42,6 +43,7 @@ def sync_single_channel(
 
     # 3. Process each video entry
     updated_episodes = []
+    new_episodes = []
     new_count = 0
 
     for entry in entries:
@@ -84,6 +86,7 @@ def sync_single_channel(
                 webpage_url=download_meta["webpage_url"],
             )
             updated_episodes.append(episode)
+            new_episodes.append(episode)
             new_count += 1
 
             # Delete local audio file
@@ -181,6 +184,21 @@ def sync_single_channel(
 
     # 9. Upload feed.xml
     feed_url = storage.upload_channel_feed(channel_id, rss_xml, is_primary=is_primary)
+
+    # 10. Send Telegram notifications for new episodes (if configured)
+    if new_episodes and config.telegram_bot_token and config.telegram_chat_id:
+        logger.info(f"[{channel_id}] Sending Telegram notifications for {len(new_episodes)} new episode(s)...")
+        for new_ep in new_episodes:
+            try:
+                send_new_episode_notification(
+                    bot_token=config.telegram_bot_token,
+                    chat_id=config.telegram_chat_id,
+                    channel_title=channel_info["title"],
+                    episode=new_ep,
+                    feed_url=feed_url,
+                )
+            except Exception as e:
+                logger.warning(f"[{channel_id}] Failed to send Telegram notification for [{new_ep.video_id}]: {e}")
 
     logger.info(f"[{channel_id}] Sync finished. Feed URL: {feed_url}")
     return {

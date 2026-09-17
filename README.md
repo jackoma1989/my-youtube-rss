@@ -60,6 +60,8 @@ GitHub Actions (免费云端 Runner)
 | `R2_SECRET_ACCESS_KEY` | R2 API Secret Access Key | `abcdef0123456789...` |
 | `R2_BUCKET_NAME` | R2 存储桶名称 | `my-podcast` |
 | `R2_PUBLIC_URL` | R2 公开访问的基础 URL（**末尾不要带斜杠**） | `https://pub-xxxxxx.r2.dev` 或 `https://podcast.yourdomain.com` |
+| `TELEGRAM_BOT_TOKEN` | （可选）Telegram Bot Token，新单集自动推送手机 | `8955999825:AAFR...` |
+| `TELEGRAM_CHAT_ID` | （可选）Telegram 接收人 Chat ID | `5584552077` |
 
 > [!TIP]
 > 可选参数：可在 **Variables** 或 **Secrets** 中添加 `MAX_EPISODES`（默认 15，代表仅保留最新 15 期，旧期数自动从 R2 彻底删除，避免占满存储）。

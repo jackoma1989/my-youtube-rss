@@ -54,5 +54,7 @@ jobs:
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           MAX_EPISODES: ${{ vars.MAX_EPISODES || secrets.MAX_EPISODES || '15' }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python -m podcast_sync.main
