@@ -1,10 +1,10 @@
 name: YouTube to Podcast Sync
 
 on:
-  schedule:
-    # Runs twice a day at 02:00 and 14:00 UTC (10:00 and 22:00 Beijing Time)
-    - cron: '0 2,14 * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub web UI
+  # Schedule disabled in favor of local Windows Task Scheduler trigger (avoids GitHub cron queue delays)
+  # schedule:
+  #   - cron: '0 2,14 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub web UI or remote API dispatch
 
 concurrency:
   group: podcast-sync

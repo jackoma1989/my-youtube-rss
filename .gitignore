@@ -24,3 +24,5 @@ cookies.txt
 Thumbs.db
 .vscode/
 .idea/
+*.log
+
