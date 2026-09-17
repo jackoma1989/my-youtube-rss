@@ -2,7 +2,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ChannelConfig, Config
@@ -101,6 +101,7 @@ def sync_single_channel(
                         except Exception:
                             pass
 
+            transcripts_checked = bool(transcripts)
             episode = PodcastEpisode(
                 video_id=video_id,
                 title=download_meta["title"],
@@ -113,6 +114,8 @@ def sync_single_channel(
                 thumbnail_url=download_meta["thumbnail_url"],
                 webpage_url=download_meta["webpage_url"],
                 transcripts=transcripts,
+                transcripts_checked=transcripts_checked,
+                transcripts_check_count=1 if transcripts_checked else 0,
             )
             updated_episodes.append(episode)
             new_episodes.append(episode)
@@ -166,9 +169,14 @@ def sync_single_channel(
 
     # 4.5 Subtitle backfill: automatically supplement missing subtitles for existing episodes (zero audio redownload)
     backfilled_episodes = 0
+    now_utc = datetime.now(timezone.utc)
     for ep in retained_episodes:
-        if not ep.transcripts:
-            logger.info(f"[{channel_id}] Supplementing missing subtitles for [{ep.video_id}] {ep.title}...")
+        if not ep.transcripts and not getattr(ep, "transcripts_checked", False):
+            ep.transcripts_check_count = getattr(ep, "transcripts_check_count", 0) + 1
+            logger.info(
+                f"[{channel_id}] Checking missing subtitles for [{ep.video_id}] {ep.title} "
+                f"(attempt #{ep.transcripts_check_count})..."
+            )
             try:
                 sub_metas = yt.fetch_subtitles_for_video(ep.video_id, config.output_dir / channel_id)
                 for sm in sub_metas:
@@ -197,8 +205,24 @@ def sync_single_channel(
                             except Exception:
                                 pass
                 if ep.transcripts:
+                    ep.transcripts_checked = True
                     backfilled_episodes += 1
                     logger.info(f"[{channel_id}] ✓ Subtitles backfilled for [{ep.video_id}]: {[t.language for t in ep.transcripts]}")
+                else:
+                    # Video genuinely has no manual or auto-generated subtitles
+                    ep_dt = ep.pub_date if ep.pub_date.tzinfo else ep.pub_date.replace(tzinfo=timezone.utc)
+                    age_hours = (now_utc - ep_dt).total_seconds() / 3600
+                    if age_hours > 24 or ep.transcripts_check_count >= 2:
+                        ep.transcripts_checked = True
+                        logger.info(
+                            f"[{channel_id}] Recorded [{ep.video_id}] as having NO subtitles "
+                            f"(permanently recorded in manifest, will not retry)."
+                        )
+                    else:
+                        logger.info(
+                            f"[{channel_id}] [{ep.video_id}] is recently published ({age_hours:.1f}h ago). "
+                            f"Will retry once more on next run in case YouTube is still generating auto-captions."
+                        )
             except Exception as e:
                 logger.warning(f"[{channel_id}] Subtitle backfill failed for [{ep.video_id}]: {e}")
 

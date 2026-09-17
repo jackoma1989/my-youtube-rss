@@ -480,6 +480,61 @@ class TestPodcastSync(unittest.TestCase):
             # Verify manifest was saved
             storage.save_episodes_manifest.assert_called_once()
 
+    def test_no_subtitles_permanently_marked_and_not_retried(self):
+        from unittest.mock import MagicMock
+        from podcast_sync.main import sync_single_channel
+        from podcast_sync.storage import StorageManager
+        from podcast_sync.youtube import YouTubeFetcher
+        from datetime import timedelta
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            cfg = Config(dry_run=True, output_dir=tmp_path, r2_public_url="https://podcast.hemajia.fun")
+            channel_cfg = ChannelConfig(id="testch", url="https://www.youtube.com/@testch")
+
+            # 1. Existing episode published 3 days ago (older than 24h), no subtitles
+            old_pub = datetime.now(timezone.utc) - timedelta(days=3)
+            ep = PodcastEpisode(
+                video_id="silent_video",
+                title="Silent Video",
+                description="No audio/speech",
+                pub_date=old_pub,
+                duration_seconds=60,
+                audio_filename="audio/testch/silent_video.m4a",
+                audio_url="https://podcast.hemajia.fun/audio/testch/silent_video.m4a",
+                file_size_bytes=1000,
+                transcripts=[],
+                transcripts_checked=False,
+                transcripts_check_count=0,
+            )
+
+            storage = StorageManager(cfg)
+            storage.load_episodes_manifest = MagicMock(return_value=[ep])
+            storage.load_ignored_videos = MagicMock(return_value={})
+            storage.cleanup_orphan_and_expired_audio = MagicMock()
+            storage.cleanup_orphan_and_expired_transcripts = MagicMock()
+            storage.save_episodes_manifest = MagicMock()
+            storage.upload_channel_feed = MagicMock(return_value="https://podcast.hemajia.fun/testch.xml")
+
+            yt = YouTubeFetcher(cfg)
+            yt.get_channel_info_and_entries = MagicMock(return_value=(
+                {"title": "Test Show", "link": "https://www.youtube.com/@testch", "description": "Desc", "author": "Host", "image_url": ""},
+                [{"id": "silent_video", "title": "Silent Video"}]
+            ))
+            # fetch_subtitles_for_video returns empty list (no subtitles on YouTube)
+            yt.fetch_subtitles_for_video = MagicMock(return_value=[])
+
+            # First run: attempts check once, finds nothing, marks transcripts_checked = True!
+            sync_single_channel(channel_cfg, cfg, storage, yt)
+            self.assertEqual(yt.fetch_subtitles_for_video.call_count, 1)
+            self.assertTrue(ep.transcripts_checked)
+            self.assertEqual(ep.transcripts, [])
+
+            # Second run: transcripts_checked is already True -> yt.fetch_subtitles_for_video should NEVER be called!
+            yt.fetch_subtitles_for_video.reset_mock()
+            sync_single_channel(channel_cfg, cfg, storage, yt)
+            self.assertEqual(yt.fetch_subtitles_for_video.call_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

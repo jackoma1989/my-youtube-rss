@@ -46,6 +46,8 @@ class PodcastEpisode:
     thumbnail_url: Optional[str] = None
     webpage_url: Optional[str] = None
     transcripts: List[PodcastTranscript] = None
+    transcripts_checked: bool = False
+    transcripts_check_count: int = 0
 
     def __post_init__(self):
         if self.transcripts is None:
@@ -64,12 +66,16 @@ class PodcastEpisode:
             "thumbnail_url": self.thumbnail_url,
             "webpage_url": self.webpage_url,
             "transcripts": [t.to_dict() for t in self.transcripts] if self.transcripts else [],
+            "transcripts_checked": self.transcripts_checked,
+            "transcripts_check_count": self.transcripts_check_count,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "PodcastEpisode":
         raw_transcripts = d.get("transcripts") or []
         transcripts = [PodcastTranscript.from_dict(t) for t in raw_transcripts if isinstance(t, dict)]
+        transcripts_checked = bool(d.get("transcripts_checked", bool(transcripts)))
+        transcripts_check_count = int(d.get("transcripts_check_count", 1 if transcripts_checked else 0))
         return cls(
             video_id=d["video_id"],
             title=d["title"],
@@ -82,6 +88,8 @@ class PodcastEpisode:
             thumbnail_url=d.get("thumbnail_url"),
             webpage_url=d.get("webpage_url"),
             transcripts=transcripts,
+            transcripts_checked=transcripts_checked,
+            transcripts_check_count=transcripts_check_count,
         )
 
 
