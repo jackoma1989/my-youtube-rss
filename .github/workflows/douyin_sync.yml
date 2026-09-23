@@ -71,8 +71,9 @@ jobs:
             sleep 2
           done
           if [ $READY -eq 0 ]; then
-            echo "::warning::TailSocks connectivity check timed out. Showing docker logs:"
+            echo "::error::TailSocks connectivity check timed out. Showing docker logs:"
             docker logs tailsocks || true
+            exit 1
           fi
 
       - name: Run Douyin Podcast Sync
