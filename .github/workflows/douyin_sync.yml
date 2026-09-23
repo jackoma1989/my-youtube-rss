@@ -52,11 +52,12 @@ jobs:
           docker run -d \
             --name tailsocks \
             --restart always \
+            --entrypoint /bin/tailsocks \
             -p 127.0.0.1:1055:1055 \
             -e TS_AUTHKEY="${{ secrets.TAILSCALE_AUTH_KEY }}" \
             ghcr.io/italypaleale/tailsocks:1 \
             --http-addr 0.0.0.0:1055 \
-            --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || 'hemajia' }}"
+            --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
 
           echo "Waiting for TailSocks proxy to connect..."
           READY=0
