@@ -95,7 +95,7 @@ class DouyinFetcher:
             params.cookie_str = self.cookie
             params.headers["Cookie"] = self.cookie
             params.max_retry = 2
-            params.timeout = 15
+            params.timeout = 45
             params.max_pages = pages
 
             if self.proxy:

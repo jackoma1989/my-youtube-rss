@@ -10,5 +10,17 @@
     "description": "路口大爷（抖音号：caijinglukouDY）音频播客。专注于宏观经济政策解读、产业趋势分析与商业企业观察。",
     "icloud_backup": true,
     "enabled": true
+  },
+  {
+    "id": "geekerwan",
+    "name": "极客湾Geekerwan",
+    "sec_uid": "MS4wLjABAAAAXXVrVvbTDOhdGW_LzlSDkdN2hZT_CRXmzzafGN-GIbkV6skPAaH2uANSFru076ZT",
+    "url": "https://www.douyin.com/user/MS4wLjABAAAAXXVrVvbTDOhdGW_LzlSDkdN2hZT_CRXmzzafGN-GIbkV6skPAaH2uANSFru076ZT",
+    "max_episodes": 15,
+    "category": "Technology",
+    "language": "zh-cn",
+    "description": "极客湾Geekerwan 抖音音频播客",
+    "icloud_backup": true,
+    "enabled": true
   }
 ]

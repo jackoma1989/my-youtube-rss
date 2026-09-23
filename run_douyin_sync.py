@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from podcast_sync.config import Config
+from podcast_sync.config import Config, sanitize_channel_id
 from podcast_sync.douyin_db import DouyinDatabase
 from podcast_sync.douyin_fetcher import DouyinFetcher
 from podcast_sync.feed import (
@@ -460,17 +460,42 @@ async def main_async(args: argparse.Namespace) -> int:
             if matched:
                 merged_channels.append(matched)
             else:
-                suffix = env_k.replace("DOUYIN_CHANNEL_URL", "").strip("_").lower()
-                raw_id = f"douyin_{suffix}" if suffix else "douyin_channel"
+                suffix = env_k.replace("DOUYIN_CHANNEL_URL", "").strip("_")
+                custom_id = (
+                    os.environ.get(f"DOUYIN_CHANNEL_ID_{suffix.upper()}")
+                    or os.environ.get(f"DOUYIN_CHANNEL_ID{suffix}")
+                    or (os.environ.get("DOUYIN_CHANNEL_ID") if not suffix else None)
+                )
+                if custom_id:
+                    raw_id = sanitize_channel_id(custom_id)
+                else:
+                    raw_id = f"douyin_{suffix.lower()}" if suffix else "douyin_channel"
+
+                custom_name = (
+                    os.environ.get(f"DOUYIN_CHANNEL_NAME_{suffix.upper()}")
+                    or os.environ.get(f"DOUYIN_CHANNEL_NAME{suffix}")
+                    or (os.environ.get("DOUYIN_CHANNEL_NAME") if not suffix else None)
+                )
+
                 merged_channels.append({
                     "id": raw_id,
                     "url": url_val,
-                    "name": None,
+                    "name": custom_name,
                     "max_episodes": int(os.environ.get("MAX_EPISODES", 15)),
                     "category": os.environ.get("PODCAST_CATEGORY", "Business"),
                     "language": os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
                     "enabled": True,
                 })
+
+        # Keep other enabled channels from douyin_channels.json that were not already in merged_channels
+        seen_urls = {ch.get("url", "").rstrip("/") for ch in merged_channels}
+        seen_secs = {ch.get("sec_uid", "") for ch in merged_channels if ch.get("sec_uid")}
+        for ch in [c for c in channels_data if c.get("enabled", True)]:
+            ch_url = ch.get("url", "").rstrip("/")
+            ch_sec = ch.get("sec_uid", "")
+            if ch_url not in seen_urls and (not ch_sec or ch_sec not in seen_secs):
+                merged_channels.append(ch)
+
         channels_data = merged_channels
 
     if not channels_data:
@@ -485,6 +510,7 @@ async def main_async(args: argparse.Namespace) -> int:
         cfg.dry_run = True
 
     storage = StorageManager(cfg)
+    storage.abort_incomplete_multipart_uploads()
     db = DouyinDatabase()
     fetcher = DouyinFetcher()
 

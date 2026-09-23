@@ -103,6 +103,17 @@ jobs:
           DOUYIN_CHANNEL_URL_8: ${{ secrets.DOUYIN_CHANNEL_URL_8 }}
           DOUYIN_CHANNEL_URL_9: ${{ secrets.DOUYIN_CHANNEL_URL_9 }}
           DOUYIN_CHANNEL_URL_10: ${{ secrets.DOUYIN_CHANNEL_URL_10 }}
+          DOUYIN_CHANNEL_ID: ${{ secrets.DOUYIN_CHANNEL_ID }}
+          DOUYIN_CHANNEL_ID_1: ${{ secrets.DOUYIN_CHANNEL_ID_1 }}
+          DOUYIN_CHANNEL_ID_2: ${{ secrets.DOUYIN_CHANNEL_ID_2 }}
+          DOUYIN_CHANNEL_ID_3: ${{ secrets.DOUYIN_CHANNEL_ID_3 }}
+          DOUYIN_CHANNEL_ID_4: ${{ secrets.DOUYIN_CHANNEL_ID_4 }}
+          DOUYIN_CHANNEL_ID_5: ${{ secrets.DOUYIN_CHANNEL_ID_5 }}
+          DOUYIN_CHANNEL_ID_6: ${{ secrets.DOUYIN_CHANNEL_ID_6 }}
+          DOUYIN_CHANNEL_ID_7: ${{ secrets.DOUYIN_CHANNEL_ID_7 }}
+          DOUYIN_CHANNEL_ID_8: ${{ secrets.DOUYIN_CHANNEL_ID_8 }}
+          DOUYIN_CHANNEL_ID_9: ${{ secrets.DOUYIN_CHANNEL_ID_9 }}
+          DOUYIN_CHANNEL_ID_10: ${{ secrets.DOUYIN_CHANNEL_ID_10 }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

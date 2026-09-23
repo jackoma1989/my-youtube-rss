@@ -33,6 +33,27 @@ class StorageManager:
 
             self.s3_client = boto3.client(**boto_kwargs)
 
+    def abort_incomplete_multipart_uploads(self) -> int:
+        """Abort any dangling/uncompleted multipart uploads in the R2 bucket."""
+        if self.config.dry_run or not self.s3_client:
+            return 0
+        try:
+            res = self.s3_client.list_multipart_uploads(Bucket=self.config.r2_bucket_name)
+            uploads = res.get("Uploads", [])
+            for u in uploads:
+                logger.info(f"Aborting incomplete multipart upload for [{u['Key']}] (UploadId: {u['UploadId'][:12]}...)")
+                self.s3_client.abort_multipart_upload(
+                    Bucket=self.config.r2_bucket_name,
+                    Key=u["Key"],
+                    UploadId=u["UploadId"],
+                )
+            if uploads:
+                logger.info(f"Cleaned up {len(uploads)} incomplete multipart upload(s).")
+            return len(uploads)
+        except Exception as e:
+            logger.warning(f"Failed to check/abort incomplete multipart uploads: {e}")
+            return 0
+
     def load_episodes_manifest(self, channel_id: str) -> List[PodcastEpisode]:
         """Load known episodes manifest for a specific channel from R2 or local cache."""
         expected_prefix = f"audio/{channel_id}/"
