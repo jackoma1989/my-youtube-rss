@@ -48,15 +48,26 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
+          CLEAN_KEY=$(echo -n "${{ secrets.TAILSCALE_AUTH_KEY }}" | tr -d '[:space:]')
+          KEY_LEN=${#CLEAN_KEY}
+          KEY_PREFIX="${CLEAN_KEY:0:11}"
+          echo "Tailscale Auth Key length: $KEY_LEN characters"
+          echo "Tailscale Auth Key prefix: $KEY_PREFIX"
+
+          if [[ "$KEY_PREFIX" != "tskey-auth-" ]]; then
+            echo "::error::TAILSCALE_AUTH_KEY does not start with 'tskey-auth-'! (Detected prefix: '$KEY_PREFIX', length: $KEY_LEN). Please make sure you generated an Auth Key and copied the full secret from the popup dialog (starts with 'tskey-auth-'), NOT the short ID from the table."
+            exit 1
+          fi
+
           echo "Starting TailSocks proxy via NAS exit node..."
           docker run -d \
             --name tailsocks \
-            --restart always \
             --entrypoint /bin/tailsocks \
             -p 127.0.0.1:1055:1055 \
-            -e TS_AUTHKEY="${{ secrets.TAILSCALE_AUTH_KEY }}" \
+            -e TS_AUTHKEY="$CLEAN_KEY" \
             ghcr.io/italypaleale/tailsocks:1 \
             --http-addr 0.0.0.0:1055 \
+            --authkey "$CLEAN_KEY" \
             --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
 
           echo "Waiting for TailSocks proxy to connect..."
