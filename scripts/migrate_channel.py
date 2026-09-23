@@ -76,6 +76,8 @@ def migrate(old_id: str, new_id: str):
         for ep in manifest_data:
             if "audio_filename" in ep and ep["audio_filename"].startswith(old_audio_prefix):
                 ep["audio_filename"] = ep["audio_filename"].replace(old_audio_prefix, f"audio/{new_id}/")
+            if "audio_url" in ep and f"audio/{old_id}/" in ep["audio_url"]:
+                ep["audio_url"] = ep["audio_url"].replace(f"audio/{old_id}/", f"audio/{new_id}/")
             if "channel_id" in ep:
                 ep["channel_id"] = new_id
 

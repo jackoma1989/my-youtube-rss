@@ -62,6 +62,8 @@ class StorageManager:
             valid = []
             for ep in eps:
                 if ep.audio_filename.startswith(expected_prefix):
+                    if not ep.audio_url or expected_prefix not in ep.audio_url:
+                        ep.audio_url = f"{self.config.r2_public_url}/{ep.audio_filename}"
                     valid.append(ep)
                 else:
                     logger.warning(
