@@ -203,13 +203,14 @@ def generate_podcast_rss(channel: PodcastChannel) -> str:
         ET.SubElement(item, "pubDate").text = format_datetime(pub_date_tz)
 
         # Enclosure (Audio stream link)
+        audio_mime = "audio/mpeg" if (ep.audio_url.endswith(".mp3") or ep.audio_filename.endswith(".mp3")) else "audio/x-m4a"
         ET.SubElement(
             item,
             "enclosure",
             {
                 "url": ep.audio_url,
                 "length": str(ep.file_size_bytes),
-                "type": "audio/x-m4a",
+                "type": audio_mime,
             },
         )
 
@@ -294,7 +295,7 @@ def validate_podcast_rss(
 
         if not audio_url:
             raise ValueError(f"[{channel_id}] Item #{idx} enclosure missing 'url'.")
-        if audio_type != "audio/x-m4a":
+        if audio_type not in ("audio/x-m4a", "audio/mpeg"):
             raise ValueError(f"[{channel_id}] Item #{idx} enclosure unexpected MIME type: {audio_type}")
         if not audio_len.isdigit() or int(audio_len) <= 0:
             raise ValueError(f"[{channel_id}] Item #{idx} enclosure invalid file length: {audio_len}")

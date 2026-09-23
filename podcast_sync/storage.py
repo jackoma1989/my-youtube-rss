@@ -17,13 +17,21 @@ class StorageManager:
         self.config = config
         self.s3_client = None
         if not config.dry_run:
-            self.s3_client = boto3.client(
-                "s3",
-                endpoint_url=f"https://{config.r2_account_id}.r2.cloudflarestorage.com",
-                aws_access_key_id=config.r2_access_key_id,
-                aws_secret_access_key=config.r2_secret_access_key,
-                region_name="auto",
-            )
+            import os
+            from botocore.config import Config as BotoConfig
+
+            boto_kwargs = {
+                "service_name": "s3",
+                "endpoint_url": f"https://{config.r2_account_id}.r2.cloudflarestorage.com",
+                "aws_access_key_id": config.r2_access_key_id,
+                "aws_secret_access_key": config.r2_secret_access_key,
+                "region_name": "auto",
+            }
+            proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+            if proxy_url:
+                boto_kwargs["config"] = BotoConfig(proxies={"https": proxy_url, "http": proxy_url})
+
+            self.s3_client = boto3.client(**boto_kwargs)
 
     def load_episodes_manifest(self, channel_id: str) -> List[PodcastEpisode]:
         """Load known episodes manifest for a specific channel from R2 or local cache."""
@@ -165,14 +173,16 @@ class StorageManager:
         )
 
     def upload_audio(self, local_path: Path, channel_id: str, video_id: str) -> str:
-        """Upload audio file to R2 under audio/{channel_id}/{video_id}.m4a."""
-        filename = f"audio/{channel_id}/{video_id}.m4a"
+        """Upload audio file to R2 under audio/{channel_id}/{video_id}.[m4a|mp3]."""
+        ext = local_path.suffix.lower() if local_path.suffix else ".m4a"
+        filename = f"audio/{channel_id}/{video_id}{ext}"
         public_url = f"{self.config.r2_public_url}/{filename}"
 
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Simulating upload of {local_path} -> {public_url}")
             return public_url
 
+        content_type = "audio/mpeg" if ext == ".mp3" else "audio/x-m4a"
         file_size_mb = local_path.stat().st_size / (1024 * 1024)
         logger.info(f"Uploading {local_path.name} ({file_size_mb:.1f} MB) to R2 as {filename}...")
         self.s3_client.upload_file(
@@ -180,7 +190,7 @@ class StorageManager:
             Bucket=self.config.r2_bucket_name,
             Key=filename,
             ExtraArgs={
-                "ContentType": "audio/x-m4a",
+                "ContentType": content_type,
                 "CacheControl": "public, max-age=31536000, immutable",
             },
         )
@@ -225,9 +235,37 @@ class StorageManager:
         logger.info(f"Channel [{channel_id}] Feed URL: {primary_feed_url}")
         return primary_feed_url
 
+    def upload_cover(self, local_path: Path, channel_id: str) -> str:
+        """Upload channel cover image to R2 under covers/{channel_id}.jpg."""
+        ext = local_path.suffix.lower() if local_path.suffix else ".jpg"
+        filename = f"covers/{channel_id}{ext}"
+        public_url = f"{self.config.r2_public_url}/{filename}"
+
+        if self.config.dry_run:
+            logger.info(f"[DRY RUN] Simulating upload of cover {local_path} -> {public_url}")
+            return public_url
+
+        content_type = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        logger.info(f"Uploading channel cover to R2 as {filename}...")
+        self.s3_client.upload_file(
+            Filename=str(local_path),
+            Bucket=self.config.r2_bucket_name,
+            Key=filename,
+            ExtraArgs={
+                "ContentType": content_type,
+                "CacheControl": "public, max-age=604800",
+            },
+        )
+        return public_url
+
     def delete_audio(self, channel_id: str, video_id: str) -> None:
         """Delete old audio file from R2."""
-        keys = [f"audio/{channel_id}/{video_id}.m4a", f"audio/{video_id}.m4a"]
+        keys = [
+            f"audio/{channel_id}/{video_id}.mp3",
+            f"audio/{channel_id}/{video_id}.m4a",
+            f"audio/{video_id}.mp3",
+            f"audio/{video_id}.m4a",
+        ]
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Simulating delete of {keys[0]} from R2")
             return
@@ -327,9 +365,9 @@ class StorageManager:
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
                     filename = key.split("/")[-1]
-                    if not filename.endswith(".m4a"):
+                    if not (filename.endswith(".m4a") or filename.endswith(".mp3")):
                         continue
-                    video_id = filename[:-4]
+                    video_id = filename.rsplit(".", 1)[0]
                     if video_id not in retained_ids:
                         logger.info(f"[{channel_id}] Pruning extra/orphan audio from R2: {key}")
                         self.s3_client.delete_object(Bucket=self.config.r2_bucket_name, Key=key)

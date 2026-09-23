@@ -26,3 +26,6 @@ Thumbs.db
 .idea/
 *.log
 
+# Scratch and local binaries
+scratch_tk/
+sample_post.json

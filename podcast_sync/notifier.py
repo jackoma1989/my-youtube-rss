@@ -115,3 +115,50 @@ def send_new_episode_notification(
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+
+
+def send_douyin_episode_notification(
+    bot_token: str,
+    chat_id: str,
+    creator_name: str,
+    episode: PodcastEpisode,
+    feed_url: str = "",
+) -> Optional[dict]:
+    """
+    Build formatted notification card for a newly synced Douyin episode and send via Telegram.
+    """
+    if not bot_token or not chat_id:
+        return None
+
+    safe_creator = html.escape(creator_name or "抖音创作者")
+    safe_title = html.escape(episode.title or "新单集")
+    duration_str = format_duration(episode.duration_seconds)
+    pub_str = (
+        episode.pub_date.strftime("%Y-%m-%d %H:%M:%S")
+        if episode.pub_date
+        else "刚刚"
+    )
+
+    lines = [
+        "🎵 <b>【抖音播客有新单集更新】</b>",
+        "",
+        f"👤 <b>博主</b>: {safe_creator}",
+        f"🎬 <b>单集</b>: {safe_title}",
+        f"⏱️ <b>时长</b>: {duration_str}",
+        f"📅 <b>发布时间</b>: {pub_str}",
+        "",
+    ]
+    if feed_url:
+        lines.append(f"📻 <b>播客订阅源</b>: <code>{feed_url}</code>")
+    if episode.webpage_url:
+        lines.append(f"🔗 <b>抖音原视频</b>: <a href=\"{episode.webpage_url}\">点击查看</a>")
+
+    message_html = "\n".join(lines)
+    return send_telegram_message(
+        bot_token=bot_token,
+        chat_id=chat_id,
+        text=message_html,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
