@@ -170,16 +170,27 @@ class DouyinFetcher:
             return posts[:max_posts]
 
     def download_audio(self, audio_url: str, output_path: Path) -> bool:
-        """Download direct MP3 stream from Douyin CDN."""
+        """Download direct MP3 stream from Douyin CDN (tries direct first for max speed, fallback to proxy)."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # 1. Try high-speed direct download first (Douyin media CDN is globally accessible)
         try:
-            req_kwargs = {"impersonate": "chrome120", "timeout": 30}
+            resp = requests.get(audio_url, impersonate="chrome120", timeout=120)
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                output_path.write_bytes(resp.content)
+                logger.info(f"Downloaded audio directly to {output_path} ({len(resp.content) / 1024 / 1024:.2f} MB)")
+                return True
+        except Exception as e:
+            logger.debug(f"Direct audio download failed ({e}), falling back to proxy...")
+
+        # 2. Fallback to proxy if direct failed
+        try:
+            req_kwargs = {"impersonate": "chrome120", "timeout": 180}
             if self.proxy:
                 req_kwargs["proxies"] = {"all": self.proxy}
             resp = requests.get(audio_url, **req_kwargs)
             if resp.status_code == 200 and len(resp.content) > 1000:
                 output_path.write_bytes(resp.content)
-                logger.info(f"Downloaded audio to {output_path} ({len(resp.content) / 1024 / 1024:.2f} MB)")
+                logger.info(f"Downloaded audio via proxy to {output_path} ({len(resp.content) / 1024 / 1024:.2f} MB)")
                 return True
             else:
                 logger.error(f"Download failed with status {resp.status_code} for {audio_url}")
@@ -189,16 +200,27 @@ class DouyinFetcher:
             return False
 
     def download_image(self, image_url: str, output_path: Path) -> bool:
-        """Download cover or avatar image."""
+        """Download cover or avatar image (tries direct first, fallback to proxy)."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # 1. Try direct download first
         try:
-            req_kwargs = {"impersonate": "chrome120", "timeout": 20}
+            resp = requests.get(image_url, impersonate="chrome120", timeout=30)
+            if resp.status_code == 200 and len(resp.content) > 500:
+                output_path.write_bytes(resp.content)
+                logger.info(f"Downloaded image directly to {output_path}")
+                return True
+        except Exception:
+            pass
+
+        # 2. Fallback to proxy
+        try:
+            req_kwargs = {"impersonate": "chrome120", "timeout": 60}
             if self.proxy:
                 req_kwargs["proxies"] = {"all": self.proxy}
             resp = requests.get(image_url, **req_kwargs)
             if resp.status_code == 200 and len(resp.content) > 500:
                 output_path.write_bytes(resp.content)
-                logger.info(f"Downloaded image to {output_path}")
+                logger.info(f"Downloaded image via proxy to {output_path}")
                 return True
             return False
         except Exception as e:
