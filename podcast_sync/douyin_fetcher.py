@@ -80,6 +80,17 @@ class DouyinFetcher:
             logger.error("No Douyin Cookie found. Please configure DOUYIN_COOKIE in .env or settings.json")
             return []
 
+        # Populate test_cookie.ini so Params() initializes cleanly without warning
+        try:
+            ini_path = SCRATCH_REPO_PATH / "Volume" / "test_cookie.ini"
+            ini_path.parent.mkdir(parents=True, exist_ok=True)
+            ini_path.write_text(
+                f"[dy]\ncookie = {self.cookie}\nuifid = {self.uifid}\nmsToken = \n\n[tk]\ncookie = \nmsToken = \n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
         async with Params() as params:
             params.cookie_str = self.cookie
             params.headers["Cookie"] = self.cookie
