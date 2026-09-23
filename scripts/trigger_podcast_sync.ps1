@@ -1,10 +1,10 @@
-﻿# Trigger GitHub Actions Podcast Sync Workflow
+# Trigger GitHub Actions Podcast Sync Workflow (YouTube and/or Douyin)
 param(
+    [string]$Workflow = "podcast_sync.yml",
     [string]$Token = ""
 )
 
 $Repo = "jackoma1989/my-youtube-rss"
-$Workflow = "podcast_sync.yml"
 $Ref = "main"
 
 # Auto-detect token if not explicitly provided
@@ -33,7 +33,6 @@ if (-not $Token) {
     exit 1
 }
 
-$Uri = "https://api.github.com/repos/$Repo/actions/workflows/$Workflow/dispatches"
 $Headers = @{
     "Accept"               = "application/vnd.github+json"
     "Authorization"        = "Bearer $Token"
@@ -43,19 +42,31 @@ $Body = @{
     ref = $Ref
 } | ConvertTo-Json
 
-try {
-    $Response = Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -Body $Body -ErrorAction Stop
-    $SuccessMsg = "[$Timestamp] SUCCESS: Successfully dispatched GitHub Actions workflow '$Workflow' on branch '$Ref'."
-    Write-Host $SuccessMsg -ForegroundColor Green
-    Add-Content -Path $LogFile -Value $SuccessMsg
-    exit 0
-} catch {
-    $ErrDetail = $_.Exception.Message
-    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-        $ErrDetail += " (" + $_.ErrorDetails.Message + ")"
-    }
-    $FailMsg = "[$Timestamp] ERROR: Failed to trigger workflow: $ErrDetail"
-    Write-Error $FailMsg
-    Add-Content -Path $LogFile -Value $FailMsg
-    exit 1
+$WorkflowsToTrigger = @()
+if ($Workflow -eq "all") {
+    $WorkflowsToTrigger = @("podcast_sync.yml", "douyin_sync.yml")
+} else {
+    $WorkflowsToTrigger = @($Workflow)
 }
+
+$allSuccess = $true
+foreach ($wf in $WorkflowsToTrigger) {
+    $Uri = "https://api.github.com/repos/$Repo/actions/workflows/$wf/dispatches"
+    try {
+        $Response = Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -Body $Body -ErrorAction Stop
+        $SuccessMsg = "[$Timestamp] SUCCESS: Successfully dispatched GitHub Actions workflow '$wf' on branch '$Ref'."
+        Write-Host $SuccessMsg -ForegroundColor Green
+        Add-Content -Path $LogFile -Value $SuccessMsg
+    } catch {
+        $allSuccess = $false
+        $ErrDetail = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $ErrDetail += " (" + $_.ErrorDetails.Message + ")"
+        }
+        $FailMsg = "[$Timestamp] ERROR: Failed to trigger workflow '$wf': $ErrDetail"
+        Write-Error $FailMsg
+        Add-Content -Path $LogFile -Value $FailMsg
+    }
+}
+
+if ($allSuccess) { exit 0 } else { exit 1 }

@@ -1,10 +1,10 @@
 name: Douyin to Podcast Sync
 
 on:
-  # Daily scheduled execution at 10:00 and 22:00 UTC+8 (02:00 and 14:00 UTC)
-  schedule:
-    - cron: '0 2,14 * * *'
-  # Allows manual execution anytime via GitHub Actions web interface
+  # Schedule disabled in favor of local Windows Task Scheduler trigger at 10:30 and 22:30 (avoids GitHub cron queue delays)
+  # schedule:
+  #   - cron: '30 2,14 * * *'
+  # Allows manual execution anytime via GitHub Actions web interface or API dispatch
   workflow_dispatch:
     inputs:
       dry_run:

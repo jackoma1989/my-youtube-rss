@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Register or manage Windows Scheduled Task for Douyin Podcast Sync.
-    Executes automatically every day at 10:00 and 22:00.
+    Triggers GitHub Actions workflow 'douyin_sync.yml' automatically every day at 10:30 and 22:30.
 
 .PARAMETER Action
     Create  - Register or overwrite the scheduled task (Default)
@@ -15,13 +15,13 @@ param (
     [string]$Action = "Create"
 )
 
-$TaskName = "DouyinPodcastSync"
+$TaskName = "DouyinPodcastSyncTrigger"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$BatScript = Join-Path $ScriptDir "run_douyin_sync.bat"
+$TriggerScript = Join-Path $ScriptDir "trigger_podcast_sync.ps1"
 
-if (-not (Test-Path $BatScript)) {
-    Write-Error "Launcher script not found: $BatScript"
+if (-not (Test-Path $TriggerScript)) {
+    Write-Error "Trigger script not found: $TriggerScript"
     exit 1
 }
 
@@ -65,14 +65,15 @@ switch ($Action) {
     "Create" {
         Write-Host "Registering Windows Scheduled Task: $TaskName" -ForegroundColor Cyan
         Write-Host "Project directory: $ProjectRoot"
-        Write-Host "Script path      : $BatScript"
+        Write-Host "Script path      : $TriggerScript"
 
-        # Action: Run bat file minimized / hidden via cmd.exe or powershell
-        $TaskAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$BatScript`"" -WorkingDirectory $ProjectRoot
+        # Action: Trigger GitHub Actions workflow douyin_sync.yml in background
+        $Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TriggerScript`" -Workflow `"douyin_sync.yml`""
+        $TaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Arguments -WorkingDirectory $ProjectRoot
 
-        # Triggers: 10:00 and 22:00 every day
-        $Trigger1 = New-ScheduledTaskTrigger -Daily -At "10:00"
-        $Trigger2 = New-ScheduledTaskTrigger -Daily -At "22:00"
+        # Triggers: 10:30 and 22:30 every day
+        $Trigger1 = New-ScheduledTaskTrigger -Daily -At "10:30"
+        $Trigger2 = New-ScheduledTaskTrigger -Daily -At "22:30"
 
         # Settings: Allow battery run, wake machine if supported, stop if runaway
         $TaskSettings = New-ScheduledTaskSettingsSet `
@@ -84,7 +85,7 @@ switch ($Action) {
             -RestartInterval (New-TimeSpan -Minutes 5)
 
         # Description
-        $Description = "Douyin Podcast Sync to Cloudflare R2 and Apple Podcasts. Runs daily at 10:00 and 22:00."
+        $Description = "Trigger GitHub Actions Douyin Podcast Sync workflow daily at 10:30 and 22:30."
 
         # Register task under current user
         Register-ScheduledTask `
@@ -97,8 +98,8 @@ switch ($Action) {
 
         Write-Host ""
         Write-Host "Scheduled Task '$TaskName' registered successfully!" -ForegroundColor Green
-        Write-Host "Scheduled times : 10:00 and 22:00 Daily" -ForegroundColor Yellow
-        Write-Host "Log output file : $ProjectRoot\output\douyin_sync_cron.log" -ForegroundColor Gray
+        Write-Host "Scheduled times : 10:30 and 22:30 Daily" -ForegroundColor Yellow
+        Write-Host "Log output file : $ProjectRoot\scripts\trigger_sync.log" -ForegroundColor Gray
         Write-Host ""
 
         # Display status
