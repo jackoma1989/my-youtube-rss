@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -170,33 +172,52 @@ class DouyinFetcher:
             return posts[:max_posts]
 
     def download_audio(self, audio_url: str, output_path: Path) -> bool:
-        """Download direct MP3 stream from Douyin CDN (tries direct first for max speed, fallback to proxy)."""
+        """Download direct MP3 stream from Douyin CDN (tries direct first for max speed, fallback to proxy).
+        Uses chunked streaming with socket-inactivity timeouts so large (60MB+) files are never prematurely killed.
+        """
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # 1. Try high-speed direct download first (Douyin media CDN is globally accessible)
+        temp_path = output_path.with_suffix(".tmp")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+        }
+
+        # 1. Try high-speed direct chunked streaming download first
         try:
-            resp = requests.get(audio_url, impersonate="chrome120", timeout=120)
-            if resp.status_code == 200 and len(resp.content) > 1000:
-                output_path.write_bytes(resp.content)
-                logger.info(f"Downloaded audio directly to {output_path} ({len(resp.content) / 1024 / 1024:.2f} MB)")
+            req = urllib.request.Request(audio_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=45) as resp, open(temp_path, "wb") as out_f:
+                if resp.status == 200:
+                    shutil.copyfileobj(resp, out_f, length=512 * 1024)
+            if temp_path.exists() and temp_path.stat().st_size > 1000:
+                temp_path.replace(output_path)
+                logger.info(f"Downloaded audio directly to {output_path} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
                 return True
         except Exception as e:
-            logger.debug(f"Direct audio download failed ({e}), falling back to proxy...")
+            logger.warning(f"Direct audio download failed ({e}), falling back to proxy...")
+            if temp_path.exists():
+                temp_path.unlink()
 
-        # 2. Fallback to proxy if direct failed
+        # 2. Fallback to proxy if direct failed (inactivity timeout = 90s, allowing large files over home uplink)
         try:
-            req_kwargs = {"impersonate": "chrome120", "timeout": 180}
+            handlers = []
             if self.proxy:
-                req_kwargs["proxies"] = {"all": self.proxy}
-            resp = requests.get(audio_url, **req_kwargs)
-            if resp.status_code == 200 and len(resp.content) > 1000:
-                output_path.write_bytes(resp.content)
-                logger.info(f"Downloaded audio via proxy to {output_path} ({len(resp.content) / 1024 / 1024:.2f} MB)")
+                handlers.append(urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
+            opener = urllib.request.build_opener(*handlers)
+            req = urllib.request.Request(audio_url, headers=headers)
+            with opener.open(req, timeout=90) as resp, open(temp_path, "wb") as out_f:
+                if resp.status == 200:
+                    shutil.copyfileobj(resp, out_f, length=512 * 1024)
+            if temp_path.exists() and temp_path.stat().st_size > 1000:
+                temp_path.replace(output_path)
+                logger.info(f"Downloaded audio via proxy to {output_path} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
                 return True
             else:
-                logger.error(f"Download failed with status {resp.status_code} for {audio_url}")
+                logger.error(f"Download failed for {audio_url}")
                 return False
         except Exception as e:
             logger.error(f"Exception downloading audio from {audio_url}: {e}")
+            if temp_path.exists():
+                temp_path.unlink()
             return False
 
     def download_image(self, image_url: str, output_path: Path) -> bool:
