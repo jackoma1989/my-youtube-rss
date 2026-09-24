@@ -10,7 +10,7 @@
 
 .PARAMETER Platform
     Douyin    - Douyin sync daily at 10:30 and 22:30
-    Bilibili  - Bilibili sync daily at 10:15 and 22:15
+    Bilibili  - Bilibili sync daily at 11:00 and 23:00
     YouTube   - YouTube sync daily at 10:00 and 22:00
     All       - Register/manage tasks for all three platforms
 #>
@@ -42,8 +42,8 @@ $PlatformMap = @{
     "Bilibili" = @{
         TaskName    = "BilibiliPodcastSyncTrigger";
         Workflow    = "bilibili_sync.yml";
-        Times       = @("10:15", "22:15");
-        Description = "Trigger GitHub Actions Bilibili Podcast Sync daily at 10:15 and 22:15."
+        Times       = @("11:00", "23:00");
+        Description = "Trigger GitHub Actions Bilibili Podcast Sync daily at 11:00 and 23:00."
     };
     "Douyin"   = @{
         TaskName    = "DouyinPodcastSyncTrigger";
