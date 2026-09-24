@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import requests
 import yt_dlp
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class BilibiliFetcher:
         else:
             logger.warning("No Bilibili cookies provided; download quality may be restricted to low bitrate.")
 
-    def _get_base_opts(self) -> dict:
+    def _get_base_opts(self, use_proxy: bool = False) -> dict:
         opts = {
             "quiet": True,
             "no_warnings": True,
@@ -81,10 +82,10 @@ class BilibiliFetcher:
         }
         if self._cookie_file and self._cookie_file.exists():
             opts["cookiefile"] = str(self._cookie_file)
-        if self.proxy:
+        if use_proxy and self.proxy:
             opts["proxy"] = self.proxy
         else:
-            # Explicitly disable proxy so yt-dlp doesn't pick up ambient HTTP_PROXY
+            # Explicitly disable proxy for high-speed direct CDN connection
             opts["proxy"] = ""
         return opts
 
@@ -111,69 +112,69 @@ class BilibiliFetcher:
         """
         Fetch list of recent video entries from UP space.
         Prioritizes Bilibili's official dynamic feed API (HTTP 200, zero 412 block)
-        and falls back to yt-dlp if needed.
+        with direct connection first, and falls back to proxy/yt-dlp if needed.
         """
         mid = self.extract_mid(space_url_or_mid)
         results = []
 
-        # 1. Primary Method: Query Bilibili Official Dynamic Feed API (immune to WBI 412 rate-limits)
+        # 1. Primary Method: Query Bilibili Official Dynamic Feed API (direct first, fallback to proxy)
         if mid:
-            try:
-                import requests
+            api_url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={mid}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Referer": f"https://space.bilibili.com/{mid}",
+                "Accept": "application/json, text/plain, */*",
+            }
+            proxy_attempts = [None]
+            if self.proxy:
+                proxy_attempts.append({"http": self.proxy, "https": self.proxy})
 
-                api_url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={mid}"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                    "Referer": f"https://space.bilibili.com/{mid}",
-                    "Accept": "application/json, text/plain, */*",
-                }
-                proxies = None
-                if self.proxy:
-                    proxies = {"http": self.proxy, "https": self.proxy}
-
-                logger.info(f"Querying Bilibili dynamic feed for UP [mid: {mid}]...")
-                resp = requests.get(api_url, headers=headers, cookies=self.cookies, proxies=proxies, timeout=10)
-                if resp.status_code == 200:
-                    data_json = resp.json()
-                    if data_json.get("code") == 0:
-                        items = data_json.get("data", {}).get("items", []) or []
-                        for it in items:
-                            mod = it.get("modules") or {}
-                            dyn = mod.get("module_dynamic") or {}
-                            maj = dyn.get("major") or {}
-                            if maj and isinstance(maj, dict) and maj.get("archive"):
-                                arc = maj["archive"]
-                                bvid = arc.get("bvid")
-                                title = arc.get("title")
-                                cover = arc.get("cover")
-                                desc = arc.get("desc")
-                                author = mod.get("module_author") or {}
-                                results.append({
-                                    "video_id": bvid,
-                                    "url": f"https://www.bilibili.com/video/{bvid}",
-                                    "title": title,
-                                    "cover": cover,
-                                    "description": desc,
-                                    "uploader": author.get("name"),
-                                    "uploader_face": author.get("face"),
-                                })
-                                if len(results) >= limit:
-                                    break
-                        if results:
-                            logger.info(f"Successfully retrieved {len(results)} recent video(s) via official dynamic feed API.")
-                            return results
+            for p in proxy_attempts:
+                mode_label = "direct connection" if p is None else f"proxy ({self.proxy})"
+                try:
+                    logger.info(f"Querying Bilibili dynamic feed for UP [mid: {mid}] via {mode_label}...")
+                    resp = requests.get(api_url, headers=headers, cookies=self.cookies, proxies=p, timeout=10)
+                    if resp.status_code == 200:
+                        data_json = resp.json()
+                        if data_json.get("code") == 0:
+                            items = data_json.get("data", {}).get("items", []) or []
+                            for it in items:
+                                mod = it.get("modules") or {}
+                                dyn = mod.get("module_dynamic") or {}
+                                maj = dyn.get("major") or {}
+                                if maj and isinstance(maj, dict) and maj.get("archive"):
+                                    arc = maj["archive"]
+                                    bvid = arc.get("bvid")
+                                    title = arc.get("title")
+                                    cover = arc.get("cover")
+                                    desc = arc.get("desc")
+                                    author = mod.get("module_author") or {}
+                                    results.append({
+                                        "video_id": bvid,
+                                        "url": f"https://www.bilibili.com/video/{bvid}",
+                                        "title": title,
+                                        "cover": cover,
+                                        "description": desc,
+                                        "uploader": author.get("name"),
+                                        "uploader_face": author.get("face"),
+                                    })
+                                    if len(results) >= limit:
+                                        break
+                            if results:
+                                logger.info(f"Successfully retrieved {len(results)} recent video(s) via dynamic feed ({mode_label}).")
+                                return results
+                        else:
+                            logger.warning(f"Bilibili dynamic feed returned code {data_json.get('code')}: {data_json.get('message')}")
                     else:
-                        logger.warning(f"Bilibili dynamic feed returned code {data_json.get('code')}: {data_json.get('message')}")
-                else:
-                    logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code}")
-            except Exception as e:
-                logger.warning(f"Dynamic feed API request failed ({e}). Falling back to yt-dlp space scanner...")
+                        logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code} via {mode_label}")
+                except Exception as e:
+                    logger.warning(f"Dynamic feed request via {mode_label} failed: {e}")
 
         # 2. Fallback Method: yt-dlp space video playlist extractor
         space_url = self.normalize_space_url(space_url_or_mid)
         logger.info(f"Scanning Bilibili UP space via yt-dlp: {space_url} (limit={limit})")
 
-        opts = self._get_base_opts()
+        opts = self._get_base_opts(use_proxy=bool(self.proxy))
         opts.update({
             "extract_flat": "in_playlist",
             "skip_download": True,
@@ -204,60 +205,93 @@ class BilibiliFetcher:
     def fetch_video_metadata(self, video_id: str) -> Optional[dict]:
         """Fetch full video metadata without downloading."""
         video_url = f"https://www.bilibili.com/video/{video_id}"
-        opts = self._get_base_opts()
+        opts = self._get_base_opts(use_proxy=False)
         opts["skip_download"] = True
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                return info
+                return ydl.extract_info(video_url, download=False)
         except Exception as e:
-            logger.error(f"Failed to fetch metadata for [{video_id}]: {e}")
+            if self.proxy:
+                logger.warning(f"Direct metadata fetch failed for [{video_id}] ({e}), retrying via proxy...")
+                try:
+                    opts_p = self._get_base_opts(use_proxy=True)
+                    opts_p["skip_download"] = True
+                    with yt_dlp.YoutubeDL(opts_p) as ydl_p:
+                        return ydl_p.extract_info(video_url, download=False)
+                except Exception as ep:
+                    logger.error(f"Failed to fetch metadata for [{video_id}] via proxy: {ep}")
             return None
 
     def download_audio_for_video(self, video_id: str, output_dir: Path) -> Optional[dict]:
-        """Download high quality audio (.m4a) and optional subtitles for a video."""
+        """
+        Download high quality audio (.m4a) and optional subtitles for a video.
+        Uses direct Gbps CDN connection first for max speed (~1-2 seconds),
+        and automatically falls back to CHINA_PROXY if direct download fails/blocks.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
         video_url = f"https://www.bilibili.com/video/{video_id}"
         out_template = str(output_dir / f"{video_id}.%(ext)s")
         target_audio_file = output_dir / f"{video_id}.m4a"
 
-        opts = self._get_base_opts()
-        opts.update({
-            "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
-            "outtmpl": out_template,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": ["ai-zh", "zh-Hans", "zh-CN", "zh"],
-            "subtitlesformat": "vtt",
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "m4a",
-                }
-            ],
-            "quiet": False,
-            "no_warnings": False,
-            "ignoreerrors": False,
-        })
+        # Attempt order: 1) Direct high-speed download, 2) Fallback to proxy
+        attempts = [False]
+        if self.proxy:
+            attempts.append(True)
 
-        logger.info(f"Downloading Bilibili audio for [{video_id}] -> {target_audio_file}")
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-        except Exception as e:
-            logger.error(f"Failed to download audio for [{video_id}]: {e}")
+        info = None
+        last_err = None
+
+        for use_proxy in attempts:
+            mode_label = f"proxy ({self.proxy})" if use_proxy else "direct connection"
+            logger.info(f"Attempting audio download for [{video_id}] via {mode_label}...")
+
+            opts = self._get_base_opts(use_proxy=use_proxy)
+            opts.update({
+                "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
+                "outtmpl": out_template,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["ai-zh", "zh-Hans", "zh-CN", "zh"],
+                "subtitlesformat": "vtt",
+                "socket_timeout": 30,
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "m4a",
+                    }
+                ],
+                "quiet": False,
+                "no_warnings": False,
+                "ignoreerrors": False,
+            })
+
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(video_url, download=True)
+                if target_audio_file.exists():
+                    logger.info(f"Successfully downloaded audio for [{video_id}] via {mode_label}!")
+                    break
+                else:
+                    candidates = list(output_dir.glob(f"{video_id}.*"))
+                    audio_cand = [c for c in candidates if c.suffix.lower() in (".m4a", ".mp3", ".opus", ".aac")]
+                    if audio_cand:
+                        target_audio_file = audio_cand[0]
+                        logger.info(f"Successfully downloaded audio for [{video_id}] via {mode_label}!")
+                        break
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Audio download via {mode_label} failed ({e}).")
+                # Remove partial files before next attempt
+                for cand in output_dir.glob(f"{video_id}*.part"):
+                    try:
+                        cand.unlink()
+                    except Exception:
+                        pass
+
+        if not target_audio_file.exists() or not info:
+            logger.error(f"Failed to download audio for [{video_id}] after all attempts: {last_err}")
             return None
-
-        if not target_audio_file.exists():
-            # Check if any audio file was created
-            candidates = list(output_dir.glob(f"{video_id}.*"))
-            audio_cand = [c for c in candidates if c.suffix.lower() in (".m4a", ".mp3", ".opus", ".aac")]
-            if audio_cand:
-                target_audio_file = audio_cand[0]
-            else:
-                logger.error(f"Downloaded audio file not found for [{video_id}]")
-                return None
 
         # Parse publication date
         pub_date = None
