@@ -1,7 +1,10 @@
 import logging
 import os
 import re
+import shutil
 import tempfile
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +37,14 @@ def parse_bilibili_cookies(cookie_input: Optional[str] = None) -> Dict[str, str]
         cookies["buvid3"] = os.environ["BILI_BUVID3"].strip()
     if "bili_jct" not in cookies and os.environ.get("BILI_BILI_JCT"):
         cookies["bili_jct"] = os.environ["BILI_BILI_JCT"].strip()
+
+    # Auxiliary browser tracking cookies to reduce WAF risk
+    if "CURRENT_FNVAL" not in cookies:
+        cookies["CURRENT_FNVAL"] = "4048"
+    if "_uuid" not in cookies:
+        cookies["_uuid"] = f"{uuid.uuid4()}{int(time.time() * 1000) % 100000:05d}infoc"
+    if "b_nut" not in cookies:
+        cookies["b_nut"] = str(int(time.time()))
 
     return cookies
 
@@ -121,9 +132,17 @@ class BilibiliFetcher:
         if mid:
             api_url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={mid}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                 "Referer": f"https://space.bilibili.com/{mid}",
+                "Origin": "https://space.bilibili.com",
                 "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
             }
             proxy_attempts = [None]
             if self.proxy:
@@ -265,6 +284,23 @@ class BilibiliFetcher:
                 "no_warnings": False,
                 "ignoreerrors": False,
             })
+
+            # Turbocharge download over Tailscale/proxy using aria2c (8 parallel connections)
+            if shutil.which("aria2c"):
+                opts["external_downloader"] = {"default": "aria2c"}
+                opts["external_downloader_args"] = {
+                    "aria2c": [
+                        "-x", "8",
+                        "-s", "8",
+                        "-j", "8",
+                        "-k", "1M",
+                        "--file-allocation=none",
+                        "--summary-interval=5",
+                    ]
+                }
+            else:
+                opts["concurrent_fragment_downloads"] = 5
+                opts["buffersize"] = 1024 * 1024
 
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
