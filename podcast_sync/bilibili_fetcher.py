@@ -320,7 +320,7 @@ class BilibiliFetcher:
 
         download_success = False
 
-        # 3. FAST PATH: Direct Gbps CDN Stream Download (1-2s total, bypasses slow proxy upload)
+        # 3. FAST PATH: Direct Gbps CDN Download (standard single-stream, no chunking)
         if best_audio and best_audio.get("url"):
             cdn_url = best_audio["url"]
             logger.info(f"Attempting direct high-speed CDN audio download for [{video_id}]...")
@@ -330,12 +330,9 @@ class BilibiliFetcher:
             }
             try:
                 t0 = time.time()
-                r = requests.get(cdn_url, headers=cdn_headers, stream=True, timeout=60)
-                if r.status_code in (200, 206):
-                    with open(target_audio_file, "wb") as fp:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                fp.write(chunk)
+                r = requests.get(cdn_url, headers=cdn_headers, timeout=60)
+                if r.status_code in (200, 206) and r.content:
+                    target_audio_file.write_bytes(r.content)
                     dt = time.time() - t0
                     mb = target_audio_file.stat().st_size / (1024 * 1024)
                     speed_mb = mb / max(dt, 0.001)
@@ -344,9 +341,9 @@ class BilibiliFetcher:
                 else:
                     logger.warning(f"Direct CDN returned HTTP {r.status_code}")
             except Exception as e:
-                logger.warning(f"Direct CDN streaming failed ({e}), falling back to proxy...")
+                logger.warning(f"Direct CDN download failed ({e}), falling back to proxy...")
 
-        # 4. SLOW PATH FALLBACK: If direct CDN download failed, use yt-dlp through proxy
+        # 4. SLOW PATH FALLBACK: If direct CDN download failed, use standard yt-dlp through proxy
         if not download_success or not target_audio_file.exists():
             mode_label = f"proxy ({self.proxy})" if self.proxy else "direct connection"
             logger.info(f"Falling back to audio download for [{video_id}] via {mode_label}...")
@@ -361,9 +358,6 @@ class BilibiliFetcher:
                 "socket_timeout": 30,
                 "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
             })
-            if shutil.which("aria2c"):
-                opts["external_downloader"] = {"default": "aria2c"}
-                opts["external_downloader_args"] = {"aria2c": ["-x", "8", "-s", "8", "-j", "8", "-k", "1M", "--file-allocation=none"]}
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([video_url])

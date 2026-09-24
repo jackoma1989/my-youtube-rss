@@ -33,10 +33,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install system dependencies (ffmpeg & aria2)
+      - name: Install system dependencies (ffmpeg)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg aria2
+          sudo apt-get install -y ffmpeg
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
