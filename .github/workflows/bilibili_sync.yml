@@ -20,6 +20,8 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
       - name: Checkout repository
@@ -48,7 +50,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
-        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
+        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
