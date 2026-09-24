@@ -48,7 +48,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
-        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        if: ${{ secrets.TAILSCALE_AUTH_KEY != '' }}
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
@@ -93,10 +93,10 @@ jobs:
 
       - name: Run Bilibili Podcast Sync
         env:
-          BILI_COOKIES: ${{ secrets.BILI_COOKIES }}
-          BILI_SESSDATA: ${{ secrets.BILI_SESSDATA }}
-          BILI_BUVID3: ${{ secrets.BILI_BUVID3 }}
-          BILI_BILI_JCT: ${{ secrets.BILI_BILI_JCT }}
+          BILI_COOKIES: ${{ secrets.BILI_COOKIES || secrets.bili_cookies }}
+          BILI_SESSDATA: ${{ secrets.BILI_SESSDATA || secrets.bili_sessdata }}
+          BILI_BUVID3: ${{ secrets.BILI_BUVID3 || secrets.bili_buvid3 }}
+          BILI_BILI_JCT: ${{ secrets.BILI_BILI_JCT || secrets.bili_jct }}
           BILIBILI_CHANNEL_URL: ${{ secrets.BILIBILI_CHANNEL_URL }}
           BILIBILI_CHANNEL_ID: ${{ secrets.BILIBILI_CHANNEL_ID }}
           BILI_MAX_EPISODES: ${{ vars.BILI_MAX_EPISODES || secrets.BILI_MAX_EPISODES || '1' }}

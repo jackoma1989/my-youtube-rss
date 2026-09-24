@@ -99,10 +99,79 @@ class BilibiliFetcher:
             return f"https://space.bilibili.com/{mid}"
         return raw
 
+    def extract_mid(self, url_or_mid: str) -> Optional[str]:
+        """Extract numeric mid from space URL or raw mid."""
+        raw = str(url_or_mid).strip()
+        if raw.isdigit():
+            return raw
+        m = re.search(r"space\.bilibili\.com/(\d+)", raw)
+        return m.group(1) if m else None
+
     def fetch_recent_videos(self, space_url_or_mid: str, limit: int = 3) -> List[dict]:
-        """Fetch list of recent video entries from UP space."""
+        """
+        Fetch list of recent video entries from UP space.
+        Prioritizes Bilibili's official dynamic feed API (HTTP 200, zero 412 block)
+        and falls back to yt-dlp if needed.
+        """
+        mid = self.extract_mid(space_url_or_mid)
+        results = []
+
+        # 1. Primary Method: Query Bilibili Official Dynamic Feed API (immune to WBI 412 rate-limits)
+        if mid:
+            try:
+                import requests
+
+                api_url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={mid}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    "Referer": f"https://space.bilibili.com/{mid}",
+                    "Accept": "application/json, text/plain, */*",
+                }
+                proxies = None
+                if self.proxy:
+                    proxies = {"http": self.proxy, "https": self.proxy}
+
+                logger.info(f"Querying Bilibili dynamic feed for UP [mid: {mid}]...")
+                resp = requests.get(api_url, headers=headers, cookies=self.cookies, proxies=proxies, timeout=10)
+                if resp.status_code == 200:
+                    data_json = resp.json()
+                    if data_json.get("code") == 0:
+                        items = data_json.get("data", {}).get("items", []) or []
+                        for it in items:
+                            mod = it.get("modules") or {}
+                            dyn = mod.get("module_dynamic") or {}
+                            maj = dyn.get("major") or {}
+                            if maj and isinstance(maj, dict) and maj.get("archive"):
+                                arc = maj["archive"]
+                                bvid = arc.get("bvid")
+                                title = arc.get("title")
+                                cover = arc.get("cover")
+                                desc = arc.get("desc")
+                                author = mod.get("module_author") or {}
+                                results.append({
+                                    "video_id": bvid,
+                                    "url": f"https://www.bilibili.com/video/{bvid}",
+                                    "title": title,
+                                    "cover": cover,
+                                    "description": desc,
+                                    "uploader": author.get("name"),
+                                    "uploader_face": author.get("face"),
+                                })
+                                if len(results) >= limit:
+                                    break
+                        if results:
+                            logger.info(f"Successfully retrieved {len(results)} recent video(s) via official dynamic feed API.")
+                            return results
+                    else:
+                        logger.warning(f"Bilibili dynamic feed returned code {data_json.get('code')}: {data_json.get('message')}")
+                else:
+                    logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Dynamic feed API request failed ({e}). Falling back to yt-dlp space scanner...")
+
+        # 2. Fallback Method: yt-dlp space video playlist extractor
         space_url = self.normalize_space_url(space_url_or_mid)
-        logger.info(f"Scanning Bilibili UP space: {space_url} (limit={limit})")
+        logger.info(f"Scanning Bilibili UP space via yt-dlp: {space_url} (limit={limit})")
 
         opts = self._get_base_opts()
         opts.update({
@@ -116,10 +185,9 @@ class BilibiliFetcher:
                 info = ydl.extract_info(space_url, download=False)
                 entries = list(info.get("entries", [])) if info else []
         except Exception as e:
-            logger.error(f"Failed to scan space {space_url}: {e}")
+            logger.error(f"Failed to scan space {space_url} via yt-dlp: {e}")
             return []
 
-        results = []
         for e in entries:
             video_id = e.get("id")
             if not video_id:
