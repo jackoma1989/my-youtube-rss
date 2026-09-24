@@ -272,6 +272,9 @@ class BilibiliFetcher:
         video_url = f"https://www.bilibili.com/video/{video_id}"
         opts = self._get_base_opts(use_proxy=False)
         opts["skip_download"] = True
+        opts["writesubtitles"] = True
+        opts["writeautomaticsub"] = True
+        opts["subtitleslangs"] = ["ai-zh", "zh-Hans", "zh-CN", "zh"]
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -282,6 +285,9 @@ class BilibiliFetcher:
                 try:
                     opts_p = self._get_base_opts(use_proxy=True)
                     opts_p["skip_download"] = True
+                    opts_p["writesubtitles"] = True
+                    opts_p["writeautomaticsub"] = True
+                    opts_p["subtitleslangs"] = ["ai-zh", "zh-Hans", "zh-CN", "zh"]
                     with yt_dlp.YoutubeDL(opts_p) as ydl_p:
                         return ydl_p.extract_info(video_url, download=False)
                 except Exception as ep:
@@ -291,27 +297,60 @@ class BilibiliFetcher:
     def download_audio_for_video(self, video_id: str, output_dir: Path) -> Optional[dict]:
         """
         Download high quality audio (.m4a) and optional subtitles for a video.
-        Uses direct Gbps CDN connection first for max speed (~1-2 seconds),
-        and automatically falls back to CHINA_PROXY if direct download fails/blocks.
+        Uses intelligent Split-Proxy:
+        1. Metadata & playurl extracted (via proxy if direct returns 412),
+        2. Audio stream downloaded DIRECTLY from official Bilibili UPOS CDN (10-50 MB/s, ~1s),
+        3. Gracefully falls back to proxy yt-dlp download if direct CDN streaming fails.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         video_url = f"https://www.bilibili.com/video/{video_id}"
         out_template = str(output_dir / f"{video_id}.%(ext)s")
         target_audio_file = output_dir / f"{video_id}.m4a"
 
-        # Attempt order: 1) Direct high-speed download, 2) Fallback to proxy
-        attempts = [False]
-        if self.proxy:
-            attempts.append(True)
+        # 1. Fetch metadata and format list (direct first, fallback to proxy)
+        info = self.fetch_video_metadata(video_id)
+        if not info:
+            logger.error(f"Failed to fetch metadata for [{video_id}]")
+            return None
 
-        info = None
-        last_err = None
+        # 2. Extract best audio format (patched to official high-speed UPOS CDN)
+        audio_formats = [f for f in info.get("formats", []) if f.get("vcodec") == "none" and f.get("url")]
+        audio_formats.sort(key=lambda x: (x.get("tbr") or x.get("abr") or 0), reverse=True)
+        best_audio = audio_formats[0] if audio_formats else None
 
-        for use_proxy in attempts:
-            mode_label = f"proxy ({self.proxy})" if use_proxy else "direct connection"
-            logger.info(f"Attempting audio download for [{video_id}] via {mode_label}...")
+        download_success = False
 
-            opts = self._get_base_opts(use_proxy=use_proxy)
+        # 3. FAST PATH: Direct Gbps CDN Stream Download (1-2s total, bypasses slow proxy upload)
+        if best_audio and best_audio.get("url"):
+            cdn_url = best_audio["url"]
+            logger.info(f"Attempting direct high-speed CDN audio download for [{video_id}]...")
+            cdn_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Referer": "https://www.bilibili.com/",
+            }
+            try:
+                t0 = time.time()
+                r = requests.get(cdn_url, headers=cdn_headers, stream=True, timeout=60)
+                if r.status_code in (200, 206):
+                    with open(target_audio_file, "wb") as fp:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                fp.write(chunk)
+                    dt = time.time() - t0
+                    mb = target_audio_file.stat().st_size / (1024 * 1024)
+                    speed_mb = mb / max(dt, 0.001)
+                    logger.info(f"Successfully downloaded audio for [{video_id}] via direct CDN in {dt:.2f}s ({mb:.2f} MB at {speed_mb:.2f} MB/s)!")
+                    download_success = True
+                else:
+                    logger.warning(f"Direct CDN returned HTTP {r.status_code}")
+            except Exception as e:
+                logger.warning(f"Direct CDN streaming failed ({e}), falling back to proxy...")
+
+        # 4. SLOW PATH FALLBACK: If direct CDN download failed, use yt-dlp through proxy
+        if not download_success or not target_audio_file.exists():
+            mode_label = f"proxy ({self.proxy})" if self.proxy else "direct connection"
+            logger.info(f"Falling back to audio download for [{video_id}] via {mode_label}...")
+            opts = self._get_base_opts(use_proxy=bool(self.proxy))
             opts.update({
                 "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
                 "outtmpl": out_template,
@@ -320,59 +359,56 @@ class BilibiliFetcher:
                 "subtitleslangs": ["ai-zh", "zh-Hans", "zh-CN", "zh"],
                 "subtitlesformat": "vtt",
                 "socket_timeout": 30,
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "m4a",
-                    }
-                ],
-                "quiet": False,
-                "no_warnings": False,
-                "ignoreerrors": False,
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
             })
-
-            # Turbocharge download over Tailscale/proxy using aria2c (8 parallel connections)
             if shutil.which("aria2c"):
                 opts["external_downloader"] = {"default": "aria2c"}
-                opts["external_downloader_args"] = {
-                    "aria2c": [
-                        "-x", "8",
-                        "-s", "8",
-                        "-j", "8",
-                        "-k", "1M",
-                        "--file-allocation=none",
-                        "--summary-interval=5",
-                    ]
-                }
-            else:
-                opts["concurrent_fragment_downloads"] = 5
-                opts["buffersize"] = 1024 * 1024
-
+                opts["external_downloader_args"] = {"aria2c": ["-x", "8", "-s", "8", "-j", "8", "-k", "1M", "--file-allocation=none"]}
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(video_url, download=True)
+                    ydl.download([video_url])
                 if target_audio_file.exists():
-                    logger.info(f"Successfully downloaded audio for [{video_id}] via {mode_label}!")
-                    break
+                    download_success = True
                 else:
                     candidates = list(output_dir.glob(f"{video_id}.*"))
                     audio_cand = [c for c in candidates if c.suffix.lower() in (".m4a", ".mp3", ".opus", ".aac")]
                     if audio_cand:
                         target_audio_file = audio_cand[0]
-                        logger.info(f"Successfully downloaded audio for [{video_id}] via {mode_label}!")
-                        break
-            except Exception as e:
-                last_err = e
-                logger.warning(f"Audio download via {mode_label} failed ({e}).")
-                # Remove partial files before next attempt
-                for cand in output_dir.glob(f"{video_id}*.part"):
-                    try:
-                        cand.unlink()
-                    except Exception:
-                        pass
+                        download_success = True
+            except Exception as ep:
+                logger.error(f"Fallback download failed for [{video_id}]: {ep}")
 
-        if not target_audio_file.exists() or not info:
-            logger.error(f"Failed to download audio for [{video_id}] after all attempts: {last_err}")
+        # 5. Extract subtitles from metadata if available
+        sub_dict = info.get("subtitles") or info.get("automatic_captions") or {}
+        for lang in ("ai-zh", "zh-Hans", "zh-CN", "zh"):
+            if lang in sub_dict:
+                for sub_item in sub_dict[lang]:
+                    sub_target = output_dir / f"{video_id}.{lang}.vtt"
+                    if "data" in sub_item and sub_item["data"]:
+                        try:
+                            data_str = sub_item["data"]
+                            if not data_str.startswith("WEBVTT"):
+                                vtt_lines = ["WEBVTT\n"]
+                                for line in data_str.splitlines():
+                                    if " --> " in line:
+                                        line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", line)
+                                    vtt_lines.append(line)
+                                data_str = "\n".join(vtt_lines)
+                            sub_target.write_text(data_str, encoding="utf-8")
+                            break
+                        except Exception:
+                            pass
+                    elif sub_item.get("url"):
+                        try:
+                            sr = requests.get(sub_item["url"], timeout=10)
+                            if sr.status_code == 200:
+                                sub_target.write_text(sr.text, encoding="utf-8")
+                                break
+                        except Exception:
+                            pass
+
+        if not target_audio_file.exists():
+            logger.error(f"Failed to download audio for [{video_id}] after all attempts")
             return None
 
         # Parse publication date
