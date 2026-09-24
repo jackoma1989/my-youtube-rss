@@ -68,11 +68,11 @@ jobs:
           echo "Starting TailSocks proxy via NAS exit node..."
           docker run -d \
             --name tailsocks \
+            --net=host \
             --entrypoint /bin/tailsocks \
-            -p 127.0.0.1:1055:1055 \
             -e TS_AUTHKEY="$CLEAN_KEY" \
             ghcr.io/italypaleale/tailsocks:1 \
-            --http-addr 0.0.0.0:1055 \
+            --http-addr 127.0.0.1:1055 \
             --authkey "$CLEAN_KEY" \
             --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
 
