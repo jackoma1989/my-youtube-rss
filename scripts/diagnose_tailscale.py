@@ -74,8 +74,8 @@ def get_tailscale_status(target_ip: str) -> Optional[dict]:
 
 def run_tailscale_ping(target_ip: str, count: int = 5) -> dict:
     """Run tailscale ping to check direct vs DERP relay."""
-    cmd = ["tailscale", "ping", f"--c={count}", target_ip]
-    code, stdout, stderr = run_cmd(cmd, timeout=25)
+    cmd = ["tailscale", "ping", "--verbose=true", f"--c={count}", target_ip]
+    code, stdout, stderr = run_cmd(cmd, timeout=30)
 
     derp_matches = []
     direct_matches = []
@@ -244,11 +244,18 @@ def main():
         print(f"  ⚠️ 未在 tailnet 中找到目标节点 {args.target_ip}，可能节点离线或 IP 不匹配。")
 
     # 2. Run Tailscale Ping (Triggers Disco & Hole-Punching)
-    print("\n[2/4] 正在向目标节点发送 WireGuard 诊断探针 (tailscale ping)...")
+    print("\n[2/4] 正在向目标节点发送 WireGuard 诊断探针 (tailscale ping --verbose)...")
     ping_res = run_tailscale_ping(args.target_ip, count=6)
-    print("  --- 探针原始回包 ---")
-    for line in ping_res["raw_output"].splitlines()[:8]:
+    print("  --- 探针原始回包 (完整输出) ---")
+    for line in ping_res["raw_output"].splitlines():
         print(f"    {line}")
+
+    # Print peer line from tailscale status CLI
+    _, ts_status_txt, _ = run_cmd(["tailscale", "status"])
+    print("\n  --- tailscale status CLI 文本 ---")
+    for line in ts_status_txt.splitlines():
+        if args.target_ip in line or "hemajia" in line:
+            print(f"    {line}")
 
     # Re-query status after ping to capture dynamic path upgrade
     status_after = get_tailscale_status(args.target_ip) or status
