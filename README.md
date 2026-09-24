@@ -41,10 +41,10 @@
 1. **三平台全自动同步**：
    * **YouTube**：支持频道、播放列表，自动下载原生 AAC 音频并抓取高精度字幕（WebVTT 格式，支持 iOS 17.4+ 歌词式实时逐句高亮滚动播放）。
    * **抖音 (Douyin)**：支持任意公开博主主页，利用原生 API 签名机制精准获取最新作品；音频文件走火山引擎 CDN 分块直连下载，秒级传输。
-   * **B站 (Bilibili)**：支持任意 UP 主主页空间，利用原生 DASH 提取 174kbps 超高清 AAC 音频流（零转码损耗、秒级下载），并自动抓取官方 AI 中文字幕嵌入 `<podcast:transcript>`！
-2. **灵活的保留策略（单集 / 15集）**：
-   * B站支持 **`max_episodes: 1`（仅下载并保留最新 1 集）**，每次新视频抓取后自动清空历史旧音频，极致节约空间与流量。
-   * YouTube / 抖音支持保留最近 15 集连播。
+   * **B站 (Bilibili)**：支持任意 UP 主主页空间，智能绕过慢速 PCDN、直连官方 UPOS 骨干 CDN 节点（单期 1 秒极速下载，9~12 MB/s）；利用原生 DASH 提取 174kbps 超高清 AAC 音频流（零转码损耗），并自动抓取官方 AI 中文字幕嵌入 `<podcast:transcript>`！
+2. **智能保留与存储控制（默认保留最新 15 集）**：
+   * 全平台（YouTube / 抖音 / B站）默认统一保留最近 **15 集** 精彩节目，支持自定义 `max_episodes`。
+   * 自动清理 R2 历史超出期数音频与字幕，配合 Cloudflare R2 免费额度，零存储成本。
 3. **多频道独立分发**：每个频道拥有独立的 RSS 源文件（如 `tim_hurricane.xml`、`geekerwan.xml`、`wangzhian.xml`），在播客客户端中可分别关注，互不串台。
 4. **零服务器运行**：完全基于 GitHub Actions + Cloudflare R2，日常运行 0 费用。
 5. **本地 iCloud 同步归档**：在本地 PC 上运行时，若系统存在 `X:\`（iCloud Drive），会自动按创作者归档音频，并在手机“文件”App 中即刻收听。
@@ -85,15 +85,27 @@
 本项目支持三种平台的频道配置：
 
 #### 1. B站频道：[`bilibili_channels.json`](file:///c:/Users/JackoMA/Documents/antigravity/fervent-nobel/bilibili_channels.json)（推荐）
-在代码根目录的 `bilibili_channels.json` 中登记需要订阅的 UP 主（默认 `max_episodes: 1` 仅保留 1 集）：
+在代码根目录的 `bilibili_channels.json` 中登记需要订阅的 UP 主（默认 `max_episodes: 15` 自动保留最新 15 集）：
 ```json
 [
+  {
+    "id": "dianyingzuitop",
+    "name": "电影最TOP",
+    "mid": "17819768",
+    "url": "https://space.bilibili.com/17819768",
+    "max_episodes": 15,
+    "category": "TV & Film",
+    "language": "zh-cn",
+    "description": "电影最TOP Bilibili 音频播客。专注于优质影视作品深度解说与剖析。",
+    "icloud_backup": true,
+    "enabled": true
+  },
   {
     "id": "tim_hurricane",
     "name": "影视飓风",
     "mid": "946974",
     "url": "https://space.bilibili.com/946974",
-    "max_episodes": 1,
+    "max_episodes": 15,
     "category": "Technology",
     "language": "zh-cn",
     "description": "影视飓风 Bilibili 音频播客。无限进步！",
@@ -181,6 +193,7 @@ Get-ScheduledTask | Where-Object { $_.TaskName -like "*PodcastSyncTrigger*" } | 
 | :--- | :--- | :--- |
 | `YouTubePodcastSyncTrigger` | 每天 `10:00` & `22:00` | `podcast_sync.yml` |
 | `DouyinPodcastSyncTrigger` | 每天 `10:30` & `22:30` | `douyin_sync.yml` |
+| `BilibiliPodcastSyncTrigger` | 每天 `11:00` & `23:00` | `bilibili_sync.yml` |
 
 ---
 
@@ -191,6 +204,7 @@ Get-ScheduledTask | Where-Object { $_.TaskName -like "*PodcastSyncTrigger*" } | 
 https://<你的R2域名>/<channel_id>.xml
 ```
 例如：
+* **电影最TOP (B站)**：`https://podcast.yourdomain.com/dianyingzuitop.xml`
 * **影视飓风 (B站)**：`https://podcast.yourdomain.com/tim_hurricane.xml`
 * **极客湾 (抖音)**：`https://podcast.yourdomain.com/geekerwan.xml`
 * **路口大爷 (抖音)**：`https://podcast.yourdomain.com/caijinglukou.xml`
@@ -210,6 +224,8 @@ https://<你的R2域名>/<channel_id>.xml
 在 [`scripts/`](file:///c:/Users/JackoMA/Documents/antigravity/fervent-nobel/scripts) 目录下提供了维护小工具：
 * **`run_bilibili_sync.py`**：B站播客同步程序，支持 `--dry-run` 和 `--force`。
 * **`run_douyin_sync.py`**：抖音播客同步主程序。
+* **`scripts/diagnose_tailscale.py`**：Tailscale 连通性探测工具，诊断 Direct 直连 vs DERP 中继、网络延迟与实际代理吞吐量。
+* **`scripts/run_bilibili_sync.bat`**：Windows 本地一键运行 B站同步脚本。
 * **`scripts/clean_multipart.py`**：检测并强制清理 R2 存储桶中所有滞留的未完成分片上传（已集成在主同步脚本启动项中自动执行）。
 * **`scripts/migrate_channel.py`**：多线程服务端直拷工具，用于在 R2 中秒级重命名/迁移频道。
 * **`scripts/trigger_podcast_sync.ps1`**：远程 REST API 触发器，支持 `-Workflow bilibili`、`-Workflow douyin`、`-Workflow youtube` 或 `-Workflow all`。
