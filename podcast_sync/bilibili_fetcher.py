@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -73,11 +74,11 @@ def create_netscape_cookie_file(cookies: Dict[str, str], target_path: Optional[P
 
 def patch_bilibili_cdn():
     """
-    Bilibili API defaults to returning PCDN (mcdn.bilivideo.cn / mountaintoys.cn) in 'baseUrl',
+    Bilibili API defaults to returning PCDN (mcdn.bilivideo.cn / mountaintoys.cn / szbdyd.com) in 'baseUrl',
     which severely throttles download speeds to ~100 KB/s.
     This monkey-patch inspects 'backupUrl' and promotes high-speed official
-    UPOS / Cloud CDN mirrors (cn-*.bilivideo.com, upos-sz-*.bilivideo.com)
-    as primary baseUrl, boosting download speeds from 100 KB/s to 5-10 MB/s (50x boost).
+    UPOS / Cloud CDN mirrors (cn-*.bilivideo.com, upos-sz-*.bilivideo.com, *.akamaized.net)
+    as primary baseUrl and retains all mirrors in 'backup_urls' for automatic retry.
     """
     try:
         from yt_dlp.extractor.bilibili import BiliBiliIE
@@ -86,19 +87,57 @@ def patch_bilibili_cdn():
 
         orig_extract_formats = BiliBiliIE.extract_formats
 
+        def filter_fast_mirrors(base, backups):
+            all_u = ([base] if base else []) + list(backups or [])
+            fast = []
+            for u in all_u:
+                if not u:
+                    continue
+                # Exclude PCDN / slow peer nodes
+                if any(p in u for p in ("mcdn", "mountaintoys", "szbdyd", "p2p")):
+                    continue
+                if any(k in u for k in ("bilivideo.com", "upos", "akamaized")):
+                    if u not in fast:
+                        fast.append(u)
+            return fast
+
         def fast_extract_formats(self, play_info):
             dash = play_info.get("dash") or {}
             for stream_type in ("audio", "video"):
                 for s in dash.get(stream_type) or []:
                     base = s.get("baseUrl") or s.get("base_url") or ""
                     backups = s.get("backupUrl") or s.get("backup_url") or []
-                    fast_mirrors = [u for u in backups if "bilivideo.com" in u or "upos" in u or "akamaized" in u]
-                    if fast_mirrors and ("mcdn" in base or "mountaintoys" in base or not base):
-                        s["baseUrl"] = fast_mirrors[0]
+                    fast = filter_fast_mirrors(base, backups)
+                    if fast:
+                        s["baseUrl"] = fast[0]
                         if "base_url" in s:
-                            s["base_url"] = fast_mirrors[0]
+                            s["base_url"] = fast[0]
+                        s["backup_urls"] = fast
 
-            return orig_extract_formats(self, play_info)
+            for d in play_info.get("durl") or []:
+                base = d.get("url") or ""
+                backups = d.get("backup_url") or []
+                fast = filter_fast_mirrors(base, backups)
+                if fast:
+                    d["url"] = fast[0]
+                    d["backup_urls"] = fast
+
+            formats = orig_extract_formats(self, play_info)
+
+            # Propagate backup_urls into extracted format dictionaries
+            for f in formats:
+                f_url = f.get("url") or ""
+                for stream_type in ("audio", "video"):
+                    for s in dash.get(stream_type) or []:
+                        if s.get("id") == f.get("format_id") or (f_url and s.get("baseUrl") == f_url):
+                            if "backup_urls" in s:
+                                f["backup_urls"] = s["backup_urls"]
+                for d in play_info.get("durl") or []:
+                    if f_url and (d.get("url") == f_url or str(d.get("order")) == str(f.get("format_id"))):
+                        if "backup_urls" in d:
+                            f["backup_urls"] = d["backup_urls"]
+
+            return formats
 
         BiliBiliIE.extract_formats = fast_extract_formats
         BiliBiliIE._cdn_patched = True
@@ -329,43 +368,111 @@ class BilibiliFetcher:
             logger.error(f"Failed to fetch metadata for [{video_id}]")
             return None
 
-        # 2. Extract best audio format (patched to official high-speed UPOS CDN)
-        audio_formats = [f for f in info.get("formats", []) if f.get("vcodec") == "none" and f.get("url")]
+        # 2. Extract formats
+        all_formats = info.get("formats", [])
+        audio_formats = [f for f in all_formats if f.get("vcodec") == "none" and f.get("url")]
         audio_formats.sort(key=lambda x: (x.get("tbr") or x.get("abr") or 0), reverse=True)
-        best_audio = audio_formats[0] if audio_formats else None
 
         download_success = False
 
-        # 3. FAST PATH: Direct Gbps CDN Download (standard single-stream, no chunking)
-        if best_audio and best_audio.get("url"):
-            cdn_url = best_audio["url"]
-            logger.info(f"Attempting direct high-speed CDN audio download for [{video_id}]...")
-            cdn_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Referer": "https://www.bilibili.com/",
-            }
-            try:
-                t0 = time.time()
-                r = requests.get(cdn_url, headers=cdn_headers, timeout=60)
-                if r.status_code in (200, 206) and r.content:
-                    target_audio_file.write_bytes(r.content)
-                    dt = time.time() - t0
-                    mb = target_audio_file.stat().st_size / (1024 * 1024)
-                    speed_mb = mb / max(dt, 0.001)
-                    logger.info(f"Successfully downloaded audio for [{video_id}] via direct CDN in {dt:.2f}s ({mb:.2f} MB at {speed_mb:.2f} MB/s)!")
-                    download_success = True
-                else:
-                    logger.warning(f"Direct CDN returned HTTP {r.status_code}")
-            except Exception as e:
-                logger.warning(f"Direct CDN download failed ({e}), falling back to proxy...")
+        cdn_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }
 
-        # 4. SLOW PATH FALLBACK: If direct CDN download failed, use standard yt-dlp through proxy
+        def try_download_urls(candidate_urls: List[str], dest_file: Path, desc: str) -> bool:
+            for idx, cdn_url in enumerate(candidate_urls):
+                if not cdn_url:
+                    continue
+                mirror_host = cdn_url.split("/")[2] if "/" in cdn_url else "cdn"
+                logger.info(f"Attempting direct high-speed CDN {desc} from [{mirror_host}] (mirror {idx+1}/{len(candidate_urls)})...")
+                try:
+                    t0 = time.time()
+                    with requests.get(cdn_url, headers=cdn_headers, timeout=(10, 30), stream=True) as r:
+                        if r.status_code in (200, 206):
+                            with open(dest_file, "wb") as f_out:
+                                for chunk in r.iter_content(chunk_size=65536):
+                                    if chunk:
+                                        f_out.write(chunk)
+                            dt = time.time() - t0
+                            mb = dest_file.stat().st_size / (1024 * 1024)
+                            if mb > 0.05:  # At least 50 KB
+                                speed_mb = mb / max(dt, 0.001)
+                                logger.info(f"Successfully downloaded {desc} via direct CDN [{mirror_host}] in {dt:.2f}s ({mb:.2f} MB at {speed_mb:.2f} MB/s)!")
+                                return True
+                            else:
+                                dest_file.unlink(missing_ok=True)
+                        else:
+                            logger.warning(f"Direct CDN [{mirror_host}] returned HTTP {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"Direct CDN [{mirror_host}] attempt failed: {e}")
+                    dest_file.unlink(missing_ok=True)
+            return False
+
+        # 3. FAST PATH A: Standalone DASH audio stream (multi-mirror retry)
+        if audio_formats:
+            best_audio = audio_formats[0]
+            candidate_urls = []
+            if best_audio.get("url"):
+                candidate_urls.append(best_audio["url"])
+            if best_audio.get("backup_urls"):
+                candidate_urls.extend(best_audio["backup_urls"])
+            candidate_urls = list(dict.fromkeys(candidate_urls))
+
+            if try_download_urls(candidate_urls, target_audio_file, f"audio for [{video_id}]"):
+                download_success = True
+
+        # 3. FAST PATH B: Muxed video (durl / MP4), direct download lowest 360P video & extract audio in 0.1s
+        if not download_success:
+            muxed_formats = [f for f in all_formats if f.get("url")]
+            # Sort by filesize ascending, or tbr ascending, to pick lowest resolution (360P)
+            muxed_formats.sort(key=lambda x: (x.get("filesize") or 999999999, x.get("tbr") or 999999999))
+            if muxed_formats:
+                lowest_muxed = muxed_formats[0]
+                temp_video_file = output_dir / f"{video_id}.temp.mp4"
+                muxed_urls = []
+                if lowest_muxed.get("url"):
+                    muxed_urls.append(lowest_muxed["url"])
+                if lowest_muxed.get("backup_urls"):
+                    muxed_urls.extend(lowest_muxed["backup_urls"])
+                muxed_urls = list(dict.fromkeys(muxed_urls))
+
+                fmt_label = f"{lowest_muxed.get('format_id') or '360P'} muxed video"
+                if try_download_urls(muxed_urls, temp_video_file, f"{fmt_label} for [{video_id}]"):
+                    # Extract audio with ffmpeg stream copy
+                    try:
+                        logger.info(f"Extracting pure audio track from {temp_video_file.name} via ffmpeg stream copy...")
+                        res = subprocess.run(
+                            ["ffmpeg", "-y", "-i", str(temp_video_file), "-vn", "-c:a", "copy", str(target_audio_file)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                        )
+                        if res.returncode != 0 or not target_audio_file.exists() or target_audio_file.stat().st_size < 1024:
+                            # Fallback to AAC encoding if copy failed
+                            logger.info(f"Stream copy failed ({res.stderr.decode(errors='ignore')[:100]}), re-encoding to AAC...")
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", str(temp_video_file), "-vn", "-c:a", "aac", "-b:a", "128k", str(target_audio_file)],
+                                check=True,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                        if target_audio_file.exists() and target_audio_file.stat().st_size > 1024:
+                            mb = target_audio_file.stat().st_size / (1024 * 1024)
+                            logger.info(f"Successfully extracted {mb:.2f} MB pure audio from muxed video in <1s!")
+                            download_success = True
+                    except Exception as e:
+                        logger.error(f"FFmpeg extraction failed for [{video_id}]: {e}")
+                    finally:
+                        temp_video_file.unlink(missing_ok=True)
+
+        # 4. SLOW PATH FALLBACK: If direct CDN download failed, use yt-dlp through proxy
+        # Strictly download lowest resolution video to avoid 100+ MB proxy downloads!
         if not download_success or not target_audio_file.exists():
             mode_label = f"proxy ({self.proxy})" if self.proxy else "direct connection"
             logger.info(f"Falling back to audio download for [{video_id}] via {mode_label}...")
             opts = self._get_base_opts(use_proxy=bool(self.proxy))
             opts.update({
-                "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
+                "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/worstvideo[ext=mp4]+bestaudio/worst[ext=mp4]/worst",
                 "outtmpl": out_template,
                 "writesubtitles": True,
                 "writeautomaticsub": True,
