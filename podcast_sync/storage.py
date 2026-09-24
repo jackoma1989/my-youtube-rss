@@ -281,6 +281,21 @@ class StorageManager:
         )
         return public_url
 
+    def cover_exists(self, channel_id: str) -> bool:
+        """Check if covers/{channel_id}.jpg exists on R2."""
+        if self.config.dry_run or not self.s3_client:
+            return False
+        for ext in (".jpg", ".jpeg", ".png"):
+            key = f"covers/{channel_id}{ext}"
+            try:
+                self.s3_client.head_object(Bucket=self.config.r2_bucket_name, Key=key)
+                return True
+            except ClientError:
+                pass
+            except Exception as e:
+                logger.debug(f"Error checking cover {key}: {e}")
+        return False
+
     def delete_audio(self, channel_id: str, video_id: str) -> None:
         """Delete old audio file from R2."""
         keys = [

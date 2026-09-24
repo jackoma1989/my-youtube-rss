@@ -1,9 +1,11 @@
-import unittest
-from datetime import datetime, timezone
-import xml.etree.ElementTree as ET
-from pathlib import Path
-import tempfile
 import json
+import os
+import tempfile
+import unittest
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 from podcast_sync.config import ChannelConfig, Config, sanitize_channel_id
 from podcast_sync.feed import PodcastChannel, PodcastEpisode, PodcastTranscript, generate_podcast_rss, format_duration, validate_podcast_rss
@@ -140,18 +142,20 @@ class TestPodcastSync(unittest.TestCase):
             json.dump(data, tmp)
             tmp_path = Path(tmp.name)
 
-        try:
-            cfg = Config.from_env(env_path=Path("nonexistent.env"), channels_file=tmp_path)
-            cfg.dry_run = True
-            cfg.validate()
-            self.assertEqual(len(cfg.channels), 2)
-            self.assertEqual(cfg.channels[0].id, "channel1")
-            self.assertEqual(cfg.channels[0].max_episodes, 10)
-            self.assertEqual(cfg.channels[1].category, "News")
-            self.assertEqual(cfg.channels[1].max_episodes, 15)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("YOUTUBE_CHANNEL_URL")}
+        with patch.dict(os.environ, clean_env, clear=True):
+            try:
+                cfg = Config.from_env(env_path=Path("nonexistent.env"), channels_file=tmp_path)
+                cfg.dry_run = True
+                cfg.validate()
+                self.assertEqual(len(cfg.channels), 2)
+                self.assertEqual(cfg.channels[0].id, "channel1")
+                self.assertEqual(cfg.channels[0].max_episodes, 10)
+                self.assertEqual(cfg.channels[1].category, "News")
+                self.assertEqual(cfg.channels[1].max_episodes, 15)
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
 
     def test_channel_manifest_isolation(self):
         from podcast_sync.storage import StorageManager

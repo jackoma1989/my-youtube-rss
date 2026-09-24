@@ -204,6 +204,75 @@ class BilibiliFetcher:
         m = re.search(r"space\.bilibili\.com/(\d+)", raw)
         return m.group(1) if m else None
 
+    def get_creator_info(self, mid: str) -> Optional[dict]:
+        """Fetch creator name and avatar face from Bilibili user card API."""
+        if not mid or not str(mid).isdigit():
+            return None
+        api_url = f"https://api.bilibili.com/x/web-interface/card?mid={mid}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }
+        attempts = [None]
+        if self.proxy:
+            attempts.append({"http": self.proxy, "https": self.proxy})
+
+        for p in attempts:
+            try:
+                resp = requests.get(api_url, headers=headers, cookies=self.cookies, proxies=p, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("code") == 0:
+                        card = data.get("data", {}).get("card", {})
+                        name = card.get("name")
+                        face = card.get("face")
+                        sign = card.get("sign")
+                        if name:
+                            return {
+                                "mid": mid,
+                                "name": name,
+                                "face": face,
+                                "sign": sign,
+                            }
+            except Exception as e:
+                logger.debug(f"Failed to fetch creator info for mid {mid}: {e}")
+        return None
+
+    def download_image(self, image_url: str, output_path: Path) -> bool:
+        """Download cover or avatar image (tries direct first, fallback to proxy)."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if image_url.startswith("//"):
+            image_url = f"https:{image_url}"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        }
+
+        # 1. Try direct download first
+        try:
+            resp = requests.get(image_url, headers=headers, timeout=15)
+            if resp.status_code == 200 and len(resp.content) > 500:
+                output_path.write_bytes(resp.content)
+                logger.info(f"Downloaded Bilibili image directly to {output_path}")
+                return True
+        except Exception:
+            pass
+
+        # 2. Fallback to proxy
+        if self.proxy:
+            try:
+                proxies = {"http": self.proxy, "https": self.proxy}
+                resp = requests.get(image_url, headers=headers, proxies=proxies, timeout=20)
+                if resp.status_code == 200 and len(resp.content) > 500:
+                    output_path.write_bytes(resp.content)
+                    logger.info(f"Downloaded Bilibili image via proxy to {output_path}")
+                    return True
+            except Exception as e:
+                logger.warning(f"Failed to download image from {image_url} via proxy: {e}")
+
+        return False
+
     def fetch_recent_videos(self, space_url_or_mid: str, limit: int = 3) -> List[dict]:
         """
         Fetch list of recent video entries from UP space.

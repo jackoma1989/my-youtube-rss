@@ -296,3 +296,17 @@ class YouTubeFetcher:
             "webpage_url": info.get("webpage_url") or video_url,
             "transcripts_meta": transcripts_meta,
         }
+
+    def download_image(self, image_url: str, output_path: Path) -> bool:
+        """Download channel avatar or cover image."""
+        import requests
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            resp = requests.get(image_url, timeout=30)
+            if resp.status_code == 200 and len(resp.content) > 500:
+                output_path.write_bytes(resp.content)
+                logger.info(f"Downloaded cover image to {output_path}")
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to download image from {image_url}: {e}")
+        return False

@@ -41,6 +41,24 @@ def sync_single_channel(
         logger.warning(f"No video entries found for channel [{channel_id}].")
         return {"id": channel_id, "title": channel_info["title"], "feed_url": "", "new": 0, "total": len(known_episodes)}
 
+    # 2.5 Handle channel cover image: guarantee self-hosted R2 cover covers/{channel_id}.jpg
+    channel_output_dir = config.output_dir / channel_id
+    channel_output_dir.mkdir(parents=True, exist_ok=True)
+    cover_file = channel_output_dir / "cover.jpg"
+    channel_cover_url = f"{config.r2_public_url}/covers/{channel_id}.jpg"
+
+    if not storage.cover_exists(channel_id):
+        raw_img = channel_info.get("image_url")
+        if raw_img and yt.download_image(raw_img, cover_file):
+            storage.upload_cover(cover_file, channel_id)
+            logger.info(f"[{channel_id}] Uploaded channel cover to R2: {channel_cover_url}")
+        elif cover_file.exists():
+            storage.upload_cover(cover_file, channel_id)
+            logger.info(f"[{channel_id}] Uploaded local cover to R2: {channel_cover_url}")
+
+    # Ensure channel_info points to self-hosted R2 URL for feed generation
+    channel_info["image_url"] = channel_cover_url
+
     # 3. Process each video entry
     updated_episodes = []
     new_episodes = []

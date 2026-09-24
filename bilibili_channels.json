@@ -1,5 +1,17 @@
 [
   {
+    "id": "dianyingzuitop",
+    "name": "电影最TOP",
+    "mid": "17819768",
+    "url": "https://space.bilibili.com/17819768",
+    "max_episodes": 15,
+    "category": "TV & Film",
+    "language": "zh-cn",
+    "description": "电影最TOP Bilibili 音频播客。专注于优质影视作品深度解说与剖析。",
+    "icloud_backup": true,
+    "enabled": true
+  },
+  {
     "id": "tim_hurricane",
     "name": "影视飓风",
     "mid": "946974",

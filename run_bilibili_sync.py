@@ -61,6 +61,17 @@ def sanitize_filename(name: str, max_length: int = 80) -> str:
     return cleaned[:max_length].rstrip(". ")
 
 
+def slugify_name(name: str) -> str:
+    """Convert Chinese/English UP name to a clean alphanumeric slug (pinyin for Chinese)."""
+    try:
+        from pypinyin import lazy_pinyin
+        slug = "".join(lazy_pinyin(name))
+    except Exception:
+        slug = name
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug).lower()
+    return slug or "bilibili_channel"
+
+
 def get_icloud_dir(channel: dict) -> Optional[Path]:
     """Determine destination folder in iCloud (Drive X:)."""
     if not channel.get("icloud_backup", True):
@@ -147,10 +158,34 @@ def sync_single_bilibili_channel(
         channel_name = recent_videos[0]["uploader"]
         logger.info(f"Auto-resolved Bilibili UP creator name: [{channel_name}]")
 
+    # Handle channel cover image: ensure local & R2 covers/{channel_id}.jpg exists
+    cover_file = channel_output_dir / "cover.jpg"
+    channel_cover_url = f"{cfg.r2_public_url}/covers/{channel_id}.jpg"
+    cover_updated = False
+
+    if not storage.cover_exists(channel_id):
+        avatar_url = None
+        for v in recent_videos:
+            if v.get("uploader_face"):
+                avatar_url = v["uploader_face"]
+                break
+        if not avatar_url and channel_conf.get("image_url"):
+            avatar_url = channel_conf.get("image_url")
+        if not avatar_url and recent_videos:
+            avatar_url = recent_videos[0].get("cover")
+
+        if avatar_url and fetcher.download_image(avatar_url, cover_file):
+            storage.upload_cover(cover_file, channel_id)
+            cover_updated = True
+            logger.info(f"[{channel_name}] Uploaded new channel cover to R2: {channel_cover_url}")
+        elif cover_file.exists():
+            storage.upload_cover(cover_file, channel_id)
+            cover_updated = True
+
     # Check if all needed recent videos are already processed and in manifest
     needed_videos = recent_videos[:max_episodes]
     all_synced = bool(needed_videos) and all(v["video_id"] in existing_video_ids for v in needed_videos)
-    if all_synced and not force:
+    if all_synced and not force and not cover_updated:
         logger.info(f"[{channel_name}] All {len(needed_videos)} recent episode(s) already in manifest and up to date.")
         return {
             "id": channel_id,
@@ -165,8 +200,6 @@ def sync_single_bilibili_channel(
     icloud_dir = get_icloud_dir(channel_conf)
     if icloud_dir:
         icloud_dir.mkdir(parents=True, exist_ok=True)
-
-    channel_cover_url = channel_conf.get("image_url")
 
     for v_entry in recent_videos[:max_episodes]:
         vid = v_entry["video_id"]
@@ -187,9 +220,6 @@ def sync_single_bilibili_channel(
         ep_description = dl_res["description"] or title
         webpage_url = dl_res["webpage_url"]
         thumb_url = dl_res["thumbnail_url"]
-
-        if not channel_cover_url and thumb_url:
-            channel_cover_url = thumb_url
 
         # 4. Upload audio to R2
         r2_audio_url = storage.upload_audio(audio_file, channel_id, vid)
@@ -236,7 +266,7 @@ def sync_single_bilibili_channel(
         manifest = [ep for ep in manifest if ep.video_id != vid]
         manifest.insert(0, episode)
 
-    if not newly_added_episodes and not force:
+    if not newly_added_episodes and not force and not cover_updated:
         logger.info(f"[{channel_name}] No new episodes downloaded.")
         return {
             "id": channel_id,
@@ -337,6 +367,9 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"Failed to read {config_file}: {e}")
 
+    setup_network_proxy()
+    fetcher = BilibiliFetcher()
+
     # Support channel override via environment variables (BILIBILI_CHANNEL_URL, etc.)
     env_channels = [
         (k, v.strip()) for k, v in os.environ.items() if k.startswith("BILIBILI_CHANNEL_URL") and v.strip()
@@ -393,13 +426,33 @@ def main() -> int:
                 matched["enabled"] = True
                 merged.append(matched)
             else:
-                cid = sanitize_channel_id(custom_id) if custom_id else (f"bili_{extracted_mid}" if extracted_mid else (f"bili_{suffix.lower()}" if suffix else "bilibili_channel"))
-                cname = custom_name or cid
+                # Resolve creator name and id intelligently
+                resolved_name = custom_name
+                resolved_face = None
+                if not resolved_name and extracted_mid:
+                    creator_info = fetcher.get_creator_info(extracted_mid)
+                    if creator_info:
+                        resolved_name = creator_info.get("name")
+                        resolved_face = creator_info.get("face")
+
+                if custom_id:
+                    cid = sanitize_channel_id(custom_id)
+                elif resolved_name:
+                    cid = sanitize_channel_id(slugify_name(resolved_name))
+                elif extracted_mid:
+                    cid = f"bili_{extracted_mid}"
+                elif suffix:
+                    cid = f"bili_{suffix.lower()}"
+                else:
+                    cid = "bilibili_channel"
+
+                cname = resolved_name or custom_name or cid
                 merged.append({
                     "id": cid,
                     "name": cname,
                     "mid": extracted_mid,
                     "url": url_val,
+                    "image_url": resolved_face,
                     "max_episodes": int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or 15),
                     "category": os.environ.get("PODCAST_CATEGORY", "Technology"),
                     "language": os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
@@ -417,15 +470,12 @@ def main() -> int:
         logger.error(f"No Bilibili channels found in {config_file} or environment variables.")
         return 1
 
-    setup_network_proxy()
-
     cfg = Config.from_env()
     if args.dry_run:
         cfg.dry_run = True
 
     storage = StorageManager(cfg)
     storage.abort_incomplete_multipart_uploads()
-    fetcher = BilibiliFetcher()
 
     results = []
     for channel in channels_data:
