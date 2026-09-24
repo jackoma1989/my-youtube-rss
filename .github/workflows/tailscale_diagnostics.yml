@@ -23,6 +23,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Cloudflare WARP IPv6
+        uses: fscarmen/warp-on-actions@v1.4
+        with:
+          stack: ipv6
+          mode: wireguard
+
+      - name: Verify Runner IPv6 Connectivity
+        run: |
+          echo "=== IP Route Table (IPv6) ==="
+          ip -6 route show || true
+          echo "=== Public IPv6 Address ==="
+          curl -6 -sm 5 https://api64.ipify.org || curl -6 -sm 5 https://v6.ident.me || true
+          echo ""
+
       - name: Start Production Tailsocks Proxy
         if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
         run: |

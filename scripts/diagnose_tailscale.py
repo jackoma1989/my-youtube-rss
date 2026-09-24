@@ -92,8 +92,8 @@ def run_tailscale_ping(target_ip: str, count: int = 5) -> dict:
             latencies.append(float(derp_m.group(2)))
             continue
 
-        # Example 2: pong from nas (100.107.43.2) via 123.45.67.89:41641 in 28ms
-        dir_m = re.search(r"via ([0-9.]+:[0-9]+)\s+in\s+([0-9.]+)ms", line)
+        # Example 2: pong from nas (100.107.43.2) via 123.45.67.89:41641 or [2409:...]:41641 in 28ms
+        dir_m = re.search(r"via (\[[a-fA-F0-9:]+\]:[0-9]+|[a-fA-F0-9.:]+:[0-9]+)\s+in\s+([0-9.]+)ms", line)
         if dir_m:
             direct_matches.append(dir_m.group(1))
             latencies.append(float(dir_m.group(2)))
@@ -103,8 +103,8 @@ def run_tailscale_ping(target_ip: str, count: int = 5) -> dict:
     min_lat = min(latencies) if latencies else 0.0
     max_lat = max(latencies) if latencies else 0.0
 
-    is_direct = len(direct_matches) > len(derp_matches)
-    is_relay = len(derp_matches) > 0 and len(direct_matches) == 0
+    is_direct = len(direct_matches) > 0
+    is_relay = len(direct_matches) == 0 and len(derp_matches) > 0
 
     return {
         "raw_output": stdout or stderr,
@@ -211,8 +211,19 @@ def main():
     print("=" * 70)
     print("      🔍 Tailscale 网络诊断与连通性分析 (Direct vs DERP Relay)")
     print("=" * 70)
+    runner_ipv6 = None
+    for endpoint in ["https://api64.ipify.org", "https://v6.ident.me", "https://ifconfig.co"]:
+        try:
+            code_ip, stdout_ip, _ = run_cmd(["curl", "-6", "-s", "--max-time", "3", endpoint])
+            if code_ip == 0 and ":" in stdout_ip:
+                runner_ipv6 = stdout_ip.strip()
+                break
+        except Exception:
+            pass
+
     print(f"目标 NAS 节点 IP : {args.target_ip}")
     print(f"本地代理地址     : {args.proxy_url}")
+    print(f"Runner 公网 IPv6 : {runner_ipv6 or '未启用 (仅 IPv4)'}")
     print("-" * 70)
 
     has_ts = check_tailscale_cli()
@@ -220,24 +231,38 @@ def main():
         print("❌ 未检测到 tailscale CLI 工具。请确保在 GitHub Actions 中已安装 Tailscale。")
         sys.exit(1)
 
-    # 1. Query Tailscale Status
-    print("\n[1/4] 正在检测 Tailscale 节点状态 (tailscale status)...")
+    # 1. Query Tailscale Status (Initial)
+    print("\n[1/4] 正在检测 Tailscale 节点初始状态 (tailscale status)...")
     status = get_tailscale_status(args.target_ip)
     if status:
         print(f"  ✓ 节点主机名   : {status['hostname']}")
         print(f"  ✓ 操作系统     : {status['os']}")
         print(f"  ✓ 在线状态     : {'在线 (Active)' if status['active'] else '未活跃/离线'}")
-        print(f"  ✓ 当前直连地址 : {status['cur_addr'] or '【无直连地址 (未打通 P2P)】'}")
-        print(f"  ✓ 当前中继节点 : {status['relay'] or '【无中继 (直连通信中)】'}")
+        print(f"  ✓ 初始直连地址 : {status['cur_addr'] or '【无直连地址，待探针触发打洞】'}")
+        print(f"  ✓ 初始中继节点 : {status['relay'] or '【无中继】'}")
     else:
         print(f"  ⚠️ 未在 tailnet 中找到目标节点 {args.target_ip}，可能节点离线或 IP 不匹配。")
 
-    # 2. Run Tailscale Ping
+    # 2. Run Tailscale Ping (Triggers Disco & Hole-Punching)
     print("\n[2/4] 正在向目标节点发送 WireGuard 诊断探针 (tailscale ping)...")
-    ping_res = run_tailscale_ping(args.target_ip, count=4)
+    ping_res = run_tailscale_ping(args.target_ip, count=6)
     print("  --- 探针原始回包 ---")
-    for line in ping_res["raw_output"].splitlines()[:6]:
+    for line in ping_res["raw_output"].splitlines()[:8]:
         print(f"    {line}")
+
+    # Re-query status after ping to capture dynamic path upgrade
+    status_after = get_tailscale_status(args.target_ip) or status
+    direct_endpoint = ""
+    if status_after and status_after.get("cur_addr"):
+        direct_endpoint = status_after["cur_addr"]
+    elif ping_res["direct_endpoints"]:
+        direct_endpoint = ping_res["direct_endpoints"][-1]
+
+    is_direct = bool(direct_endpoint) or ping_res["is_direct"]
+    is_ipv6_direct = False
+    if is_direct and direct_endpoint:
+        if "[" in direct_endpoint or direct_endpoint.count(":") > 1:
+            is_ipv6_direct = True
 
     # 3. Run Tailscale Netcheck
     print("\n[3/4] 正在分析当前环境 NAT 穿透特征 (tailscale netcheck)...")
@@ -263,22 +288,22 @@ def main():
         print(f"  ⚠️ 代理下载测试失败: {speed_res.get('error')}")
 
     # Determine Verdict
-    is_direct = ping_res["is_direct"] or (status and bool(status.get("cur_addr")))
     derp_region = (
         ping_res["derp_regions"][0]
         if ping_res["derp_regions"]
-        else (status.get("relay") if status else "")
+        else (status_after.get("relay") if status_after else "")
     )
 
     if is_direct:
         verdict = "直连 (DIRECT)"
         verdict_icon = "🚀"
-        verdict_color = "绿色"
-        detail_msg = f"连接已成功实现 P2P 穿透直连！端点地址: {status.get('cur_addr') if status else ping_res['direct_endpoints']}"
+        if is_ipv6_direct:
+            detail_msg = f"🎉 成功建立公网 IPv6 端到端纯公网 P2P 直连！端点: {direct_endpoint}，完全跳过了 DERP 中继！"
+        else:
+            detail_msg = f"连接已成功实现 P2P 穿透直连！端点: {direct_endpoint}"
     else:
         verdict = "中继 (DERP RELAY)"
         verdict_icon = "🐢"
-        verdict_color = "黄色/红色"
         detail_msg = f"当前数据流全部通过 Tailscale 公共中继服务器转发（中继区域代码: {derp_region or '未知'}）。这正是导致速度只有 ~120KB/s 的直接根源！"
 
     print("\n" + "=" * 70)
@@ -293,19 +318,25 @@ def main():
 
     # Output Root Cause & Recommendations
     print("\n💡 【原因深度解析与提速方案】:")
-    if not is_direct:
-        print("1. 为什么是中继 (DERP Relay)？")
-        print("   您的 NAS 安装在 Windows 虚拟机内。当 Tailscale 运行在虚拟机中时，流量需要经过：")
-        print("   「GitHub Actions (国外) -> 家用路由器 NAT -> Windows 宿主机虚拟交换机 NAT -> Linux/NAS 虚拟机」")
-        print("   构成了多层 NAT (Double NAT)，且 Windows 宿主机通常阻断了未经允许的外网入站 UDP 41641 端口探测。")
-        print("   Tailscale 在 NAT 穿透握手超时后，被迫回退到了官方免费 DERP 中继服务器（限速且丢包严重）。\n")
-        print("2. 如何实现【50倍提速直连 (Direct)】？（三选一）")
-        print("   方案 A【最推荐·最简单】：将 NAS 虚拟机的虚拟网卡从「NAT 模式」改为「桥接模式 (Bridged Network)」，使其直接获取局域网真实 IP；并在路由器开启 UPnP。")
-        print("   方案 B【端口映射】：在主路由器上将外部 UDP 端口 41641 端口转发（Port Forwarding）直接指向您的 NAS 虚拟机 IP。")
-        print("   方案 C【直接运行在 Windows】：直接在宿主机 Windows 系统上安装运行 Tailscale 官方客户端作为 Exit Node，不要走虚拟机内套内。")
+    if is_direct:
+        if is_ipv6_direct:
+            print("1. 恭喜！Cloudflare WARP IPv6 成功打通了与家庭 NAS 的纯公网 IPv6 P2P 直连！")
+            print("2. 流量直接端到端 WireGuard UDP 通信，完全绕过 DERP 中继，充分跑满家庭宽带上行！")
+        else:
+            print("1. 恭喜！当前网络已实现 WireGuard 点对点直连。")
+            print("2. 当前速度受限于您家庭宽带的实际上行带宽（Uplink Bandwidth）。")
     else:
-        print("1. 恭喜！当前网络已实现 WireGuard 点对点直连。")
-        print("2. 当前速度受限于您家庭宽带的实际上行带宽（Uplink Bandwidth）。")
+        print("1. 为什么仍是中继 (DERP Relay)？")
+        if runner_ipv6:
+            print("   GitHub Actions Runner 已经成功获取公网 IPv6 出口，但直连握手仍未建立。可能原因：")
+            print("   - NAS 虚拟机尚未获取独立的公网 IPv6 地址（2409:...）。")
+            print("   - 小米路由器虽然开启了 IPv6，但开启了 IPv6 防火墙，丢弃了外网入站的 UDP 数据包。")
+            print("   - 虚拟机内部防火墙阻止了 UDP 41641 入站。")
+        else:
+            print("   Runner 未能成功获得 IPv6 出口，且家庭网络为 100.65 运营商大内网 (CGNAT)，缺乏公网 IPv4。")
+        print("\n2. 后续优化方向：")
+        print("   - 检查 NAS 是否拥有 2409: 开头的公网 IPv6 地址。")
+        print("   - 检查小米路由器后台是否开启了「IPv6 防火墙」，尝试放行或临时关闭测试。")
     print("=" * 70 + "\n")
 
     # Generate GitHub Step Summary if in Actions environment
@@ -316,21 +347,15 @@ def main():
             f.write("| 诊断指标 | 状态与数值 |\n")
             f.write("| :--- | :--- |\n")
             f.write(f"| **当前通信状态** | **{verdict_icon} {verdict}** |\n")
-            f.write(f"| **中继服务器** | `{derp_region or '无 (直连模式)'}` |\n")
+            f.write(f"| **Runner 公网 IPv6** | `{runner_ipv6 or '未启用'}` |\n")
+            f.write(f"| **直连端点 / 中继** | `{direct_endpoint if is_direct else ('DERP: ' + str(derp_region))}` |\n")
             f.write(f"| **平均延迟 (RTT)** | `{ping_res['avg_latency_ms']:.1f} ms` |\n")
             f.write(f"| **UDP 穿透支持** | `{'通过' if netcheck['udp'] else '受阻'}` |\n")
             f.write(f"| **对称型 NAT (NAT Mapping)** | `{'是 (MappingVariesByDestIP=true)' if netcheck['symmetric_nat'] else '否 (容易穿透)'}` |\n")
             if speed_res.get("success"):
                 f.write(f"| **实测代理下载速率** | **`{speed_res['speed_kb_s']} KB/s` ({speed_res['speed_mb_s']} MB/s)** |\n")
-            f.write("\n\n### 💡 结论与优化建议\n")
+            f.write("\n\n### 💡 结论与说明\n")
             f.write(f"> {detail_msg}\n\n")
-            if not is_direct:
-                f.write("#### 为什么速度慢？\n")
-                f.write("- **数据全走免费公共 DERP 中继**：公共 DERP 服务器有单连接带宽限速（通常 100KB/s~300KB/s）。\n")
-                f.write("- **虚拟机多层 NAT 阻断**：Windows 宿主机网络过滤导致 WireGuard UDP 无法打洞成功。\n\n")
-                f.write("#### 极速提速方案：\n")
-                f.write("1. **改用桥接模式 (Bridged)**：虚拟机网卡从 NAT 改为桥接，并在主路由开启 UPnP。\n")
-                f.write("2. **端口转发**：路由器将 UDP `41641` 映射到 NAS IP。\n")
 
 
 if __name__ == "__main__":
