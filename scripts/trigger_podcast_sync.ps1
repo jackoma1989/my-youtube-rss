@@ -44,7 +44,13 @@ $Body = @{
 
 $WorkflowsToTrigger = @()
 if ($Workflow -eq "all") {
-    $WorkflowsToTrigger = @("podcast_sync.yml", "douyin_sync.yml")
+    $WorkflowsToTrigger = @("podcast_sync.yml", "douyin_sync.yml", "bilibili_sync.yml")
+} elseif ($Workflow -eq "bilibili" -or $Workflow -eq "bili") {
+    $WorkflowsToTrigger = @("bilibili_sync.yml")
+} elseif ($Workflow -eq "douyin") {
+    $WorkflowsToTrigger = @("douyin_sync.yml")
+} elseif ($Workflow -eq "youtube") {
+    $WorkflowsToTrigger = @("podcast_sync.yml")
 } else {
     $WorkflowsToTrigger = @($Workflow)
 }

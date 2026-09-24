@@ -1,0 +1,124 @@
+name: Bilibili to Podcast Sync
+
+on:
+  # Allows manual execution anytime via GitHub Actions web interface or API dispatch
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulate without uploading to R2 or sending TG'
+        type: boolean
+        default: false
+      force:
+        description: 'Force re-check and sync'
+        type: boolean
+        default: false
+
+concurrency:
+  group: bilibili-podcast-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies (ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U --pre "yt-dlp[default]"
+          pip install -r requirements.txt
+
+      - name: Start Tailscale Exit-Node Proxy (TailSocks)
+        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          CLEAN_KEY=$(echo -n "${{ secrets.TAILSCALE_AUTH_KEY }}" | tr -d '[:space:]')
+          KEY_LEN=${#CLEAN_KEY}
+          KEY_PREFIX="${CLEAN_KEY:0:11}"
+          echo "Tailscale Auth Key length: $KEY_LEN characters"
+          echo "Tailscale Auth Key prefix: $KEY_PREFIX"
+
+          if [[ "$KEY_PREFIX" != "tskey-auth-" ]]; then
+            echo "::error::TAILSCALE_AUTH_KEY does not start with 'tskey-auth-'! (Detected prefix: '$KEY_PREFIX', length: $KEY_LEN)."
+            exit 1
+          fi
+
+          echo "Starting TailSocks proxy via NAS exit node..."
+          docker run -d \
+            --name tailsocks \
+            --entrypoint /bin/tailsocks \
+            -p 127.0.0.1:1055:1055 \
+            -e TS_AUTHKEY="$CLEAN_KEY" \
+            ghcr.io/italypaleale/tailsocks:1 \
+            --http-addr 0.0.0.0:1055 \
+            --authkey "$CLEAN_KEY" \
+            --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
+
+          echo "Waiting for TailSocks proxy to connect..."
+          READY=0
+          for i in {1..20}; do
+            if curl -s -m 4 --proxy http://127.0.0.1:1055 https://www.bilibili.com > /dev/null 2>&1; then
+              echo "TailSocks proxy is connected and ready!"
+              READY=1
+              break
+            fi
+            echo "Waiting for TailSocks proxy... ($i/20)"
+            sleep 2
+          done
+          if [ $READY -eq 0 ]; then
+            echo "::error::TailSocks connectivity check timed out. Showing docker logs:"
+            docker logs tailsocks || true
+            exit 1
+          fi
+
+      - name: Run Bilibili Podcast Sync
+        env:
+          BILI_COOKIES: ${{ secrets.BILI_COOKIES }}
+          BILI_SESSDATA: ${{ secrets.BILI_SESSDATA }}
+          BILI_BUVID3: ${{ secrets.BILI_BUVID3 }}
+          BILI_BILI_JCT: ${{ secrets.BILI_BILI_JCT }}
+          BILIBILI_CHANNEL_URL: ${{ secrets.BILIBILI_CHANNEL_URL }}
+          BILIBILI_CHANNEL_ID: ${{ secrets.BILIBILI_CHANNEL_ID }}
+          BILI_MAX_EPISODES: ${{ vars.BILI_MAX_EPISODES || secrets.BILI_MAX_EPISODES || '1' }}
+          CHINA_PROXY: ${{ secrets.CHINA_PROXY }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$CHINA_PROXY" ] && [ -n "$TAILSCALE_AUTH_KEY" ]; then
+            echo "Auto-detected TAILSCALE_AUTH_KEY. Setting CHINA_PROXY to http://127.0.0.1:1055"
+            export CHINA_PROXY="http://127.0.0.1:1055"
+          fi
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          python run_bilibili_sync.py $ARGS
