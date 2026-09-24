@@ -1,0 +1,80 @@
+name: Tailscale Diagnostics & Speed Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ip:
+        description: 'Target Tailscale IP of NAS exit node'
+        required: false
+        default: '100.107.43.2'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Start Production Tailsocks Proxy
+        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        run: |
+          CLEAN_KEY=$(echo -n "${{ secrets.TAILSCALE_AUTH_KEY }}" | tr -d '[:space:]')
+          TARGET_IP="${{ github.event.inputs.target_ip || secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
+          echo "Starting Tailsocks container pointing to exit node: $TARGET_IP..."
+          docker run -d \
+            --name tailsocks \
+            --net=host \
+            --entrypoint /bin/tailsocks \
+            -e TS_AUTHKEY="$CLEAN_KEY" \
+            ghcr.io/italypaleale/tailsocks:1 \
+            --http-addr 127.0.0.1:1055 \
+            --authkey "$CLEAN_KEY" \
+            --exit-node "$TARGET_IP"
+
+          echo "Waiting for Tailsocks proxy to become ready..."
+          READY=0
+          for i in {1..20}; do
+            if curl -s -m 4 --proxy http://127.0.0.1:1055 https://www.bilibili.com > /dev/null 2>&1; then
+              echo "Tailsocks proxy is connected and active!"
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ $READY -eq 0 ]; then
+            echo "::warning::Tailsocks connection timed out. Showing docker logs:"
+            docker logs tailsocks || true
+          fi
+
+      - name: Install Official Tailscale CLI & Join Tailnet
+        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        run: |
+          CLEAN_KEY=$(echo -n "${{ secrets.TAILSCALE_AUTH_KEY }}" | tr -d '[:space:]')
+          echo "Installing Tailscale official package on runner..."
+          curl -fsSL https://tailscale.com/install.sh | sh
+          
+          echo "Starting tailscaled daemon..."
+          sudo systemctl enable --now tailscaled
+
+          echo "Authenticating Tailscale client (hostname: gha-diagnostics-probe)..."
+          sudo tailscale up \
+            --authkey="$CLEAN_KEY" \
+            --hostname="gha-diagnostics-probe" \
+            --accept-routes=false
+
+      - name: Run Tailscale Diagnostics Script
+        env:
+          TAILSCALE_EXIT_NODE: ${{ github.event.inputs.target_ip || secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}
+          CHINA_PROXY: http://127.0.0.1:1055
+        run: |
+          python scripts/diagnose_tailscale.py \
+            --target-ip="${{ env.TAILSCALE_EXIT_NODE }}" \
+            --proxy-url="http://127.0.0.1:1055"
