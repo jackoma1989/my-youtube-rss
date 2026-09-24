@@ -197,41 +197,57 @@ class BilibiliFetcher:
             for p in proxy_attempts:
                 mode_label = "direct connection" if p is None else f"proxy ({self.proxy})"
                 try:
-                    logger.info(f"Querying Bilibili dynamic feed for UP [mid: {mid}] via {mode_label}...")
-                    resp = requests.get(api_url, headers=headers, cookies=self.cookies, proxies=p, timeout=10)
-                    if resp.status_code == 200:
+                    current_offset = ""
+                    feed_results = []
+                    seen_bvids = set()
+                    while len(feed_results) < limit:
+                        page_url = api_url if not current_offset else f"{api_url}&offset={current_offset}"
+                        resp = requests.get(page_url, headers=headers, cookies=self.cookies, proxies=p, timeout=10)
+                        if resp.status_code != 200:
+                            logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code} via {mode_label}")
+                            break
                         data_json = resp.json()
-                        if data_json.get("code") == 0:
-                            items = data_json.get("data", {}).get("items", []) or []
-                            for it in items:
-                                mod = it.get("modules") or {}
-                                dyn = mod.get("module_dynamic") or {}
-                                maj = dyn.get("major") or {}
-                                if maj and isinstance(maj, dict) and maj.get("archive"):
-                                    arc = maj["archive"]
-                                    bvid = arc.get("bvid")
-                                    title = arc.get("title")
-                                    cover = arc.get("cover")
-                                    desc = arc.get("desc")
-                                    author = mod.get("module_author") or {}
-                                    results.append({
-                                        "video_id": bvid,
-                                        "url": f"https://www.bilibili.com/video/{bvid}",
-                                        "title": title,
-                                        "cover": cover,
-                                        "description": desc,
-                                        "uploader": author.get("name"),
-                                        "uploader_face": author.get("face"),
-                                    })
-                                    if len(results) >= limit:
-                                        break
-                            if results:
-                                logger.info(f"Successfully retrieved {len(results)} recent video(s) via dynamic feed ({mode_label}).")
-                                return results
-                        else:
+                        if data_json.get("code") != 0:
                             logger.warning(f"Bilibili dynamic feed returned code {data_json.get('code')}: {data_json.get('message')}")
-                    else:
-                        logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code} via {mode_label}")
+                            break
+                        data_data = data_json.get("data") or {}
+                        items = data_data.get("items") or []
+                        if not items:
+                            break
+                        for it in items:
+                            mod = it.get("modules") or {}
+                            dyn = mod.get("module_dynamic") or {}
+                            maj = dyn.get("major") or {}
+                            if maj and isinstance(maj, dict) and maj.get("archive"):
+                                arc = maj["archive"]
+                                bvid = arc.get("bvid")
+                                if not bvid or bvid in seen_bvids:
+                                    continue
+                                seen_bvids.add(bvid)
+                                title = arc.get("title")
+                                cover = arc.get("cover")
+                                desc = arc.get("desc")
+                                author = mod.get("module_author") or {}
+                                feed_results.append({
+                                    "video_id": bvid,
+                                    "url": f"https://www.bilibili.com/video/{bvid}",
+                                    "title": title,
+                                    "cover": cover,
+                                    "description": desc,
+                                    "uploader": author.get("name"),
+                                    "uploader_face": author.get("face"),
+                                })
+                                if len(feed_results) >= limit:
+                                    break
+                        has_more = data_data.get("has_more", False)
+                        new_offset = data_data.get("offset", "")
+                        if not has_more or not new_offset or new_offset == current_offset:
+                            break
+                        current_offset = new_offset
+
+                    if feed_results:
+                        logger.info(f"Successfully retrieved {len(feed_results)} recent video(s) via dynamic feed ({mode_label}).")
+                        return feed_results
                 except Exception as e:
                     logger.warning(f"Dynamic feed request via {mode_label} failed: {e}")
 

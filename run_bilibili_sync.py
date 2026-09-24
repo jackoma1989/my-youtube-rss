@@ -116,8 +116,8 @@ def sync_single_bilibili_channel(
     channel_name = channel_conf.get("name") or channel_id
     space_url = channel_conf.get("url") or (f"https://space.bilibili.com/{channel_conf.get('mid')}" if channel_conf.get("mid") else None)
     
-    # Strictly respect 1 episode limit by default unless overridden
-    max_episodes = int(channel_conf.get("max_episodes") or os.environ.get("BILI_MAX_EPISODES") or os.environ.get("MAX_EPISODES") or 1)
+    # Strictly respect 15 episode limit by default unless overridden
+    max_episodes = int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or channel_conf.get("max_episodes") or 15)
     category = channel_conf.get("category", "Technology")
     language = channel_conf.get("language", "zh-cn")
     description = channel_conf.get("description", f"{channel_name} Bilibili 音频播客")
@@ -126,7 +126,7 @@ def sync_single_bilibili_channel(
 
     if not space_url:
         logger.error(f"[{channel_name}] Missing 'url' or 'mid' in configuration.")
-        return False
+        return None
 
     channel_output_dir = cfg.output_dir / channel_id
     channel_output_dir.mkdir(parents=True, exist_ok=True)
@@ -136,18 +136,29 @@ def sync_single_bilibili_channel(
     existing_video_ids = {ep.video_id for ep in manifest}
     logger.info(f"[{channel_name}] Loaded {len(manifest)} existing episode(s) from R2 manifest.")
 
-    # 2. Scan recent videos from space (fetch latest 2-3 to find latest new upload)
-    recent_videos = fetcher.fetch_recent_videos(space_url, limit=max(3, max_episodes * 2))
+    # 2. Scan recent videos from space (fetch with buffer to find up to max_episodes videos)
+    recent_videos = fetcher.fetch_recent_videos(space_url, limit=max(15, max_episodes * 2))
     if not recent_videos:
         logger.warning(f"[{channel_name}] No videos retrieved from {space_url}")
-        return False
+        return None
 
-    # Check if the latest video is already processed
-    latest_video = recent_videos[0]
-    latest_vid = latest_video["video_id"]
-    if latest_vid in existing_video_ids and not force:
-        logger.info(f"[{channel_name}] Latest video [{latest_vid}] is already in manifest and up to date.")
-        return True
+    # Auto-resolve channel_name from uploader name if default/mid-based
+    if (channel_name == channel_id or channel_name.startswith("bili_")) and recent_videos[0].get("uploader"):
+        channel_name = recent_videos[0]["uploader"]
+        logger.info(f"Auto-resolved Bilibili UP creator name: [{channel_name}]")
+
+    # Check if all needed recent videos are already processed and in manifest
+    needed_videos = recent_videos[:max_episodes]
+    all_synced = bool(needed_videos) and all(v["video_id"] in existing_video_ids for v in needed_videos)
+    if all_synced and not force:
+        logger.info(f"[{channel_name}] All {len(needed_videos)} recent episode(s) already in manifest and up to date.")
+        return {
+            "id": channel_id,
+            "title": channel_name,
+            "feed_url": f"{cfg.r2_public_url}/{channel_id}.xml",
+            "new": 0,
+            "total": len(manifest),
+        }
 
     # 3. Download the new episode(s) up to max_episodes
     newly_added_episodes: List[PodcastEpisode] = []
@@ -227,7 +238,13 @@ def sync_single_bilibili_channel(
 
     if not newly_added_episodes and not force:
         logger.info(f"[{channel_name}] No new episodes downloaded.")
-        return True
+        return {
+            "id": channel_id,
+            "title": channel_name,
+            "feed_url": f"{cfg.r2_public_url}/{channel_id}.xml",
+            "new": 0,
+            "total": len(manifest),
+        }
 
     # 8. Sort manifest descending by date & enforce max_episodes limit (default 1)
     unique_episodes = {ep.video_id: ep for ep in manifest}
@@ -292,7 +309,13 @@ def sync_single_bilibili_channel(
         logger.info(f"[DRY RUN] Would send {len(newly_added_episodes)} Telegram notification(s).")
 
     logger.info(f"=== Successfully completed sync for [{channel_name}] ===")
-    return True
+    return {
+        "id": channel_id,
+        "title": channel_name,
+        "feed_url": feed_url,
+        "new": len(newly_added_episodes),
+        "total": len(retained),
+    }
 
 
 def main() -> int:
@@ -318,32 +341,77 @@ def main() -> int:
     env_channels = [
         (k, v.strip()) for k, v in os.environ.items() if k.startswith("BILIBILI_CHANNEL_URL") and v.strip()
     ]
+    def sort_key(item):
+        k = item[0].replace("BILIBILI_CHANNEL_URL", "").strip("_")
+        return int(k) if k.isdigit() else 0
+    env_channels.sort(key=sort_key)
+
     if env_channels:
         merged = []
-        json_by_url = {c.get("url", "").rstrip("/"): c for c in channels_data if c.get("url")}
+        seen_urls = set()
         for env_k, url_val in env_channels:
-            norm = url_val.rstrip("/")
-            if norm in json_by_url:
-                merged.append(json_by_url[norm])
+            norm_url = url_val.rstrip("/")
+            if norm_url in seen_urls:
+                continue
+            seen_urls.add(norm_url)
+
+            suffix = env_k.replace("BILIBILI_CHANNEL_URL", "").strip("_")
+            custom_id = (
+                os.environ.get(f"BILIBILI_CHANNEL_ID_{suffix.upper()}")
+                or os.environ.get(f"BILIBILI_CHANNEL_ID_{suffix}")
+                or os.environ.get(f"BILIBILI_CHANNEL_ID{suffix}")
+                or (os.environ.get("BILIBILI_CHANNEL_ID") if not suffix else None)
+            )
+            custom_name = (
+                os.environ.get(f"BILIBILI_CHANNEL_NAME_{suffix.upper()}")
+                or os.environ.get(f"BILIBILI_CHANNEL_NAME_{suffix}")
+                or os.environ.get(f"BILIBILI_CHANNEL_NAME{suffix}")
+                or (os.environ.get("BILIBILI_CHANNEL_NAME") if not suffix else None)
+            )
+
+            # Check if this URL or mid matches any entry in bilibili_channels.json
+            matched = None
+            mid_match = re.search(r"space\.bilibili\.com/(\d+)", url_val)
+            extracted_mid = mid_match.group(1) if mid_match else None
+
+            for ch in channels_data:
+                ch_url = ch.get("url", "").rstrip("/")
+                ch_mid = str(ch.get("mid", ""))
+                if ch_url and ch_url == norm_url:
+                    matched = dict(ch)
+                    break
+                if extracted_mid and ch_mid and ch_mid == extracted_mid:
+                    matched = dict(ch)
+                    break
+
+            if matched:
+                if custom_id:
+                    matched["id"] = sanitize_channel_id(custom_id)
+                if custom_name:
+                    matched["name"] = custom_name
+                matched["max_episodes"] = int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or matched.get("max_episodes") or 15)
+                matched["enabled"] = True
+                merged.append(matched)
             else:
-                suffix = env_k.replace("BILIBILI_CHANNEL_URL", "").strip("_")
-                cid = os.environ.get(f"BILIBILI_CHANNEL_ID_{suffix}") or os.environ.get("BILIBILI_CHANNEL_ID") or f"bili_{suffix.lower() if suffix else 'channel'}"
-                cname = os.environ.get(f"BILIBILI_CHANNEL_NAME_{suffix}") or os.environ.get("BILIBILI_CHANNEL_NAME") or cid
+                cid = sanitize_channel_id(custom_id) if custom_id else (f"bili_{extracted_mid}" if extracted_mid else (f"bili_{suffix.lower()}" if suffix else "bilibili_channel"))
+                cname = custom_name or cid
                 merged.append({
                     "id": cid,
                     "name": cname,
+                    "mid": extracted_mid,
                     "url": url_val,
-                    "max_episodes": int(os.environ.get("BILI_MAX_EPISODES") or os.environ.get("MAX_EPISODES") or 1),
+                    "max_episodes": int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or 15),
                     "category": os.environ.get("PODCAST_CATEGORY", "Technology"),
                     "language": os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
+                    "description": f"{cname} Bilibili 音频播客",
+                    "icloud_backup": True,
                     "enabled": True,
                 })
-        # Add remaining enabled channels from config
-        seen_urls = {c.get("url", "").rstrip("/") for c in merged}
-        for c in channels_data:
-            if c.get("enabled", True) and c.get("url", "").rstrip("/") not in seen_urls:
-                merged.append(c)
+
         channels_data = merged
+    else:
+        for ch in channels_data:
+            ch["max_episodes"] = int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or ch.get("max_episodes") or 15)
 
     if not channels_data:
         logger.error(f"No Bilibili channels found in {config_file} or environment variables.")
@@ -359,20 +427,31 @@ def main() -> int:
     storage.abort_incomplete_multipart_uploads()
     fetcher = BilibiliFetcher()
 
-    success_count = 0
+    results = []
     for channel in channels_data:
         if not channel.get("enabled", True):
             logger.info(f"Skipping disabled channel: {channel.get('name')}")
             continue
         try:
-            ok = sync_single_bilibili_channel(channel, cfg, storage, fetcher, force=args.force)
-            if ok:
-                success_count += 1
+            res = sync_single_bilibili_channel(channel, cfg, storage, fetcher, force=args.force)
+            if res:
+                results.append(res)
         except Exception as e:
             logger.error(f"Error syncing channel {channel.get('name')}: {e}", exc_info=True)
 
-    logger.info(f"Finished Bilibili Podcast Sync. Successfully processed {success_count}/{len(channels_data)} channel(s).")
-    return 0 if success_count > 0 else 1
+    logger.info(f"Finished Bilibili Podcast Sync. Successfully processed {len(results)}/{len(channels_data)} channel(s).")
+
+    if results:
+        print("\n" + "=" * 65)
+        print("【播客专属订阅源列表 (Apple Podcasts Feeds)】")
+        print("=" * 65)
+        for r in results:
+            print(f"频道: {r['title']} [{r['id']}]")
+            print(f"  - 新增集数: {r['new']} | 总期数: {r['total']}")
+            print(f"  - 订阅链接: {r['feed_url']}")
+            print("-" * 65)
+
+    return 0 if results else 1
 
 
 if __name__ == "__main__":

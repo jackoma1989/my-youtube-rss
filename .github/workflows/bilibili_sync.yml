@@ -100,8 +100,40 @@ jobs:
           BILI_BUVID3: ${{ secrets.BILI_BUVID3 || secrets.bili_buvid3 }}
           BILI_BILI_JCT: ${{ secrets.BILI_BILI_JCT || secrets.bili_jct }}
           BILIBILI_CHANNEL_URL: ${{ secrets.BILIBILI_CHANNEL_URL }}
+          BILIBILI_CHANNEL_URL_1: ${{ secrets.BILIBILI_CHANNEL_URL_1 }}
+          BILIBILI_CHANNEL_URL_2: ${{ secrets.BILIBILI_CHANNEL_URL_2 }}
+          BILIBILI_CHANNEL_URL_3: ${{ secrets.BILIBILI_CHANNEL_URL_3 }}
+          BILIBILI_CHANNEL_URL_4: ${{ secrets.BILIBILI_CHANNEL_URL_4 }}
+          BILIBILI_CHANNEL_URL_5: ${{ secrets.BILIBILI_CHANNEL_URL_5 }}
+          BILIBILI_CHANNEL_URL_6: ${{ secrets.BILIBILI_CHANNEL_URL_6 }}
+          BILIBILI_CHANNEL_URL_7: ${{ secrets.BILIBILI_CHANNEL_URL_7 }}
+          BILIBILI_CHANNEL_URL_8: ${{ secrets.BILIBILI_CHANNEL_URL_8 }}
+          BILIBILI_CHANNEL_URL_9: ${{ secrets.BILIBILI_CHANNEL_URL_9 }}
+          BILIBILI_CHANNEL_URL_10: ${{ secrets.BILIBILI_CHANNEL_URL_10 }}
           BILIBILI_CHANNEL_ID: ${{ secrets.BILIBILI_CHANNEL_ID }}
-          BILI_MAX_EPISODES: ${{ vars.BILI_MAX_EPISODES || secrets.BILI_MAX_EPISODES || '1' }}
+          BILIBILI_CHANNEL_ID_1: ${{ secrets.BILIBILI_CHANNEL_ID_1 }}
+          BILIBILI_CHANNEL_ID_2: ${{ secrets.BILIBILI_CHANNEL_ID_2 }}
+          BILIBILI_CHANNEL_ID_3: ${{ secrets.BILIBILI_CHANNEL_ID_3 }}
+          BILIBILI_CHANNEL_ID_4: ${{ secrets.BILIBILI_CHANNEL_ID_4 }}
+          BILIBILI_CHANNEL_ID_5: ${{ secrets.BILIBILI_CHANNEL_ID_5 }}
+          BILIBILI_CHANNEL_ID_6: ${{ secrets.BILIBILI_CHANNEL_ID_6 }}
+          BILIBILI_CHANNEL_ID_7: ${{ secrets.BILIBILI_CHANNEL_ID_7 }}
+          BILIBILI_CHANNEL_ID_8: ${{ secrets.BILIBILI_CHANNEL_ID_8 }}
+          BILIBILI_CHANNEL_ID_9: ${{ secrets.BILIBILI_CHANNEL_ID_9 }}
+          BILIBILI_CHANNEL_ID_10: ${{ secrets.BILIBILI_CHANNEL_ID_10 }}
+          BILIBILI_CHANNEL_NAME: ${{ secrets.BILIBILI_CHANNEL_NAME }}
+          BILIBILI_CHANNEL_NAME_1: ${{ secrets.BILIBILI_CHANNEL_NAME_1 }}
+          BILIBILI_CHANNEL_NAME_2: ${{ secrets.BILIBILI_CHANNEL_NAME_2 }}
+          BILIBILI_CHANNEL_NAME_3: ${{ secrets.BILIBILI_CHANNEL_NAME_3 }}
+          BILIBILI_CHANNEL_NAME_4: ${{ secrets.BILIBILI_CHANNEL_NAME_4 }}
+          BILIBILI_CHANNEL_NAME_5: ${{ secrets.BILIBILI_CHANNEL_NAME_5 }}
+          BILIBILI_CHANNEL_NAME_6: ${{ secrets.BILIBILI_CHANNEL_NAME_6 }}
+          BILIBILI_CHANNEL_NAME_7: ${{ secrets.BILIBILI_CHANNEL_NAME_7 }}
+          BILIBILI_CHANNEL_NAME_8: ${{ secrets.BILIBILI_CHANNEL_NAME_8 }}
+          BILIBILI_CHANNEL_NAME_9: ${{ secrets.BILIBILI_CHANNEL_NAME_9 }}
+          BILIBILI_CHANNEL_NAME_10: ${{ secrets.BILIBILI_CHANNEL_NAME_10 }}
+          MAX_EPISODES: ${{ vars.MAX_EPISODES || secrets.MAX_EPISODES || '15' }}
+          BILI_MAX_EPISODES: ${{ vars.BILI_MAX_EPISODES || secrets.BILI_MAX_EPISODES || '' }}
           CHINA_PROXY: ${{ secrets.CHINA_PROXY }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
