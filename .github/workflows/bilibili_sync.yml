@@ -27,30 +27,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check Bilibili Channel Configuration
+        id: check_channels
+        env:
+          BILIBILI_CHANNEL_URL: ${{ secrets.BILIBILI_CHANNEL_URL }}
+          BILIBILI_CHANNEL_URL_1: ${{ secrets.BILIBILI_CHANNEL_URL_1 }}
+          BILIBILI_CHANNEL_URL_2: ${{ secrets.BILIBILI_CHANNEL_URL_2 }}
+          BILIBILI_CHANNEL_URL_3: ${{ secrets.BILIBILI_CHANNEL_URL_3 }}
+          BILIBILI_CHANNEL_URL_4: ${{ secrets.BILIBILI_CHANNEL_URL_4 }}
+          BILIBILI_CHANNEL_URL_5: ${{ secrets.BILIBILI_CHANNEL_URL_5 }}
+          BILIBILI_CHANNEL_URL_6: ${{ secrets.BILIBILI_CHANNEL_URL_6 }}
+          BILIBILI_CHANNEL_URL_7: ${{ secrets.BILIBILI_CHANNEL_URL_7 }}
+          BILIBILI_CHANNEL_URL_8: ${{ secrets.BILIBILI_CHANNEL_URL_8 }}
+          BILIBILI_CHANNEL_URL_9: ${{ secrets.BILIBILI_CHANNEL_URL_9 }}
+          BILIBILI_CHANNEL_URL_10: ${{ secrets.BILIBILI_CHANNEL_URL_10 }}
+        run: |
+          HAS_ENV=$(env | grep -E '^BILIBILI_CHANNEL_URL(_[0-9]+)?=.+' || true)
+          HAS_JSON=$(python3 -c "import json, pathlib; p=pathlib.Path('bilibili_channels.json'); data=json.loads(p.read_text()) if p.exists() else []; print('yes' if any(c.get('enabled', True) for c in data if isinstance(c, dict)) else '')" 2>/dev/null || true)
+          if [ -n "$HAS_ENV" ] || [ -n "$HAS_JSON" ]; then
+            echo "has_channels=true" >> "$GITHUB_OUTPUT"
+            echo "Active Bilibili channel configuration detected."
+          else
+            echo "has_channels=false" >> "$GITHUB_OUTPUT"
+            echo "No Bilibili channels configured in Secrets or bilibili_channels.json. Skipping sync gracefully."
+          fi
+
       - name: Set up Python
+        if: steps.check_channels.outputs.has_channels == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install system dependencies (ffmpeg)
+        if: steps.check_channels.outputs.has_channels == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
       - name: Setup Deno
+        if: steps.check_channels.outputs.has_channels == 'true'
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
       - name: Install Python dependencies
+        if: steps.check_channels.outputs.has_channels == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -U --pre "yt-dlp[default]"
           pip install -r requirements.txt
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
-        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        if: steps.check_channels.outputs.has_channels == 'true' && env.TAILSCALE_AUTH_KEY != ''
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
@@ -94,6 +123,7 @@ jobs:
           fi
 
       - name: Run Bilibili Podcast Sync
+        if: steps.check_channels.outputs.has_channels == 'true'
         env:
           BILI_COOKIES: ${{ secrets.BILI_COOKIES || secrets.bili_cookies }}
           BILI_SESSDATA: ${{ secrets.BILI_SESSDATA || secrets.bili_sessdata }}

@@ -367,10 +367,7 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"Failed to read {config_file}: {e}")
 
-    setup_network_proxy()
-    fetcher = BilibiliFetcher()
-
-    # Support channel override via environment variables (BILIBILI_CHANNEL_URL, etc.)
+    # Support channel configuration via environment variables (BILIBILI_CHANNEL_URL, etc.)
     env_channels = [
         (k, v.strip()) for k, v in os.environ.items() if k.startswith("BILIBILI_CHANNEL_URL") and v.strip()
     ]
@@ -378,6 +375,14 @@ def main() -> int:
         k = item[0].replace("BILIBILI_CHANNEL_URL", "").strip("_")
         return int(k) if k.isdigit() else 0
     env_channels.sort(key=sort_key)
+
+    active_json_channels = [ch for ch in channels_data if ch.get("enabled", True)]
+    if not env_channels and not active_json_channels:
+        logger.info("No Bilibili channels configured in environment variables or bilibili_channels.json. Skipping sync gracefully.")
+        return 0
+
+    setup_network_proxy()
+    fetcher = BilibiliFetcher()
 
     if env_channels:
         merged = []
@@ -467,8 +472,8 @@ def main() -> int:
             ch["max_episodes"] = int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or ch.get("max_episodes") or 15)
 
     if not channels_data:
-        logger.error(f"No Bilibili channels found in {config_file} or environment variables.")
-        return 1
+        logger.info(f"No Bilibili channels configured in {config_file} or environment variables. Exiting gracefully.")
+        return 0
 
     cfg = Config.from_env()
     if args.dry_run:
