@@ -147,22 +147,6 @@ def prune_icloud_folder(icloud_dir: Path, retained_episodes: List[PodcastEpisode
     return deleted_count
 
 
-KNOWN_DOUYIN_PRESETS = {
-    "MS4wLjABAAAAfvBbG3svnuAlE41qFjO64nq5H7NBU7y6b17PeY-Mi7c": {
-        "id": "caijinglukou",
-        "name": "路口大爷",
-        "category": "Business",
-        "description": "路口大爷（抖音号：caijinglukouDY）音频播客。专注于宏观经济政策解读、产业趋势分析与商业企业观察。",
-    },
-    "MS4wLjABAAAAXXVrVvbTDOhdGW_LzlSDkdN2hZT_CRXmzzafGN-GIbkV6skPAaH2uANSFru076ZT": {
-        "id": "geekerwan",
-        "name": "极客湾Geekerwan",
-        "category": "Technology",
-        "description": "极客湾Geekerwan 抖音音频播客",
-    },
-}
-
-
 async def sync_channel(
     channel: dict,
     cfg: Config,
@@ -191,18 +175,6 @@ async def sync_channel(
             logger.error(f"Failed to resolve sec_uid for [{channel_name}] from '{url}'")
             return False
 
-    # Apply known preset metadata if sec_uid matches an existing channel
-    if sec_uid in KNOWN_DOUYIN_PRESETS:
-        preset = KNOWN_DOUYIN_PRESETS[sec_uid]
-        if channel_id.startswith("douyin_"):
-            channel_id = preset["id"]
-            channel["id"] = channel_id
-        if not channel.get("name") or channel_name.startswith("douyin_"):
-            channel_name = preset["name"]
-            channel["name"] = channel_name
-        category = channel.get("category") or preset["category"]
-        description = channel.get("description") or preset["description"]
-
     logger.info(f"=== Starting sync for [{channel_name}] ({channel_id}) ===")
 
     # 2. Fetch latest creator posts from Douyin API
@@ -211,18 +183,19 @@ async def sync_channel(
         logger.warning(f"[{channel_name}] No posts fetched from Douyin API. Skipping.")
         return False
 
-    # Auto-detect creator name and pinyin ID from posts if added via GitHub Secret with URL only
-    if (not channel.get("name") or channel_name.startswith("douyin_")) and posts:
+    # Always auto-recognize creator name and pinyin ID from Douyin API response unless explicitly overridden
+    if posts:
         author_name = posts[0].get("author_name")
         if author_name:
-            channel_name = author_name
-            channel["name"] = author_name
-            description = f"{channel_name} 抖音音频播客"
-            logger.info(f"Auto-detected creator name: {channel_name}")
-            if channel_id.startswith("douyin_"):
+            if not channel.get("name") or channel_name.startswith("douyin_"):
+                channel_name = author_name
+                channel["name"] = author_name
+                description = f"{channel_name} 抖音音频播客"
+                logger.info(f"Auto-detected creator name: {channel_name}")
+            if not channel.get("custom_id_override"):
                 channel_id = sanitize_channel_id(author_name)
                 channel["id"] = channel_id
-                logger.info(f"Auto-generated pinyin channel ID: {channel_id}")
+                logger.info(f"Auto-recognized pinyin channel ID: {channel_id}")
 
     logger.info(f"[{channel_name}] Fetched {len(posts)} recent post(s) from Douyin.")
 
@@ -503,22 +476,6 @@ async def main_async(args: argparse.Namespace) -> int:
                     if sec and sec in url_val:
                         matched = ch
                         break
-            if not matched:
-                for sec, preset in KNOWN_DOUYIN_PRESETS.items():
-                    if sec in url_val:
-                        matched = {
-                            "id": preset["id"],
-                            "name": preset["name"],
-                            "sec_uid": sec,
-                            "url": url_val,
-                            "max_episodes": int(os.environ.get("MAX_EPISODES", 15)),
-                            "category": preset["category"],
-                            "language": "zh-cn",
-                            "description": preset["description"],
-                            "icloud_backup": True,
-                            "enabled": True,
-                        }
-                        break
 
             suffix = env_k.replace("DOUYIN_CHANNEL_URL", "").strip("_")
             custom_id = (
@@ -538,6 +495,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 ch_copy = dict(matched)
                 if custom_id:
                     ch_copy["id"] = sanitize_channel_id(custom_id)
+                    ch_copy["custom_id_override"] = True
                 if custom_name:
                     ch_copy["name"] = custom_name
                 ch_copy["max_episodes"] = int(os.environ.get("MAX_EPISODES", ch_copy.get("max_episodes", 15)))
@@ -551,6 +509,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
                 merged_channels.append({
                     "id": raw_id,
+                    "custom_id_override": bool(custom_id),
                     "url": url_val,
                     "name": custom_name,
                     "max_episodes": int(os.environ.get("MAX_EPISODES", 15)),
@@ -583,6 +542,8 @@ async def main_async(args: argparse.Namespace) -> int:
         return 1
 
     target_channel_id = args.channel.strip().lower() if args.channel else None
+    all_resolved = True
+    active_channel_ids = set()
 
     for ch in channels_data:
         ch_id = ch.get("id", "").strip().lower()
@@ -593,7 +554,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if target_channel_id and ch_id != target_channel_id:
             continue
 
-        await sync_channel(
+        ok = await sync_channel(
             channel=ch,
             cfg=cfg,
             storage=storage,
@@ -601,6 +562,23 @@ async def main_async(args: argparse.Namespace) -> int:
             fetcher=fetcher,
             force=args.force,
         )
+        if ok:
+            active_channel_ids.add(ch.get("id", "").strip().lower())
+        else:
+            all_resolved = False
+
+    if not target_channel_id and all_resolved and active_channel_ids:
+        try:
+            persisted_ids = storage.list_persisted_channels(platform="douyin")
+            unsubscribed_ids = sorted(persisted_ids - active_channel_ids)
+            for unsub_id in unsubscribed_ids:
+                logger.warning(
+                    f"[{unsub_id}] Douyin channel is no longer in active configuration. "
+                    f"Clearing feed XML while preserving R2 audio files."
+                )
+                storage.remove_channel_feed(unsub_id)
+        except Exception as e:
+            logger.warning(f"Error checking unsubscribed Douyin channels: {e}")
 
     return 0
 

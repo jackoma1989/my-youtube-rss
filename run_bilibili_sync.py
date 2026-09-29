@@ -139,24 +139,32 @@ def sync_single_bilibili_channel(
         logger.error(f"[{channel_name}] Missing 'url' or 'mid' in configuration.")
         return None
 
-    channel_output_dir = cfg.output_dir / channel_id
-    channel_output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Load manifest from R2
-    manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
-    existing_video_ids = {ep.video_id for ep in manifest}
-    logger.info(f"[{channel_name}] Loaded {len(manifest)} existing episode(s) from R2 manifest.")
-
-    # 2. Scan recent videos from space (fetch with buffer to find up to max_episodes videos)
+    # 1. Scan recent videos from space (fetch with buffer to find up to max_episodes videos)
     recent_videos = fetcher.fetch_recent_videos(space_url, limit=max(15, max_episodes * 2))
     if not recent_videos:
         logger.warning(f"[{channel_name}] No videos retrieved from {space_url}")
         return None
 
-    # Auto-resolve channel_name from uploader name if default/mid-based
-    if (channel_name == channel_id or channel_name.startswith("bili_")) and recent_videos[0].get("uploader"):
-        channel_name = recent_videos[0]["uploader"]
-        logger.info(f"Auto-resolved Bilibili UP creator name: [{channel_name}]")
+    # Auto-resolve channel_name and pinyin channel_id from uploader name unless explicitly overridden
+    if recent_videos[0].get("uploader"):
+        uploader_name = recent_videos[0]["uploader"]
+        if channel_name == channel_id or channel_name.startswith("bili_"):
+            channel_name = uploader_name
+            channel_conf["name"] = channel_name
+            description = f"{channel_name} Bilibili 音频播客"
+            logger.info(f"Auto-resolved Bilibili UP creator name: [{channel_name}]")
+        if not channel_conf.get("custom_id_override"):
+            channel_id = sanitize_channel_id(slugify_name(uploader_name))
+            channel_conf["id"] = channel_id
+            logger.info(f"Auto-recognized pinyin channel ID: [{channel_id}]")
+
+    channel_output_dir = cfg.output_dir / channel_id
+    channel_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Load manifest from R2
+    manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
+    existing_video_ids = {ep.video_id for ep in manifest}
+    logger.info(f"[{channel_name}] Loaded {len(manifest)} existing episode(s) from R2 manifest.")
 
     # Handle channel cover image: ensure local & R2 covers/{channel_id}.jpg exists
     cover_file = channel_output_dir / "cover.jpg"
@@ -425,6 +433,7 @@ def main() -> int:
             if matched:
                 if custom_id:
                     matched["id"] = sanitize_channel_id(custom_id)
+                    matched["custom_id_override"] = True
                 if custom_name:
                     matched["name"] = custom_name
                 matched["max_episodes"] = int(os.environ.get("MAX_EPISODES") or os.environ.get("BILI_MAX_EPISODES") or matched.get("max_episodes") or 15)
@@ -454,6 +463,7 @@ def main() -> int:
                 cname = resolved_name or custom_name or cid
                 merged.append({
                     "id": cid,
+                    "custom_id_override": bool(custom_id),
                     "name": cname,
                     "mid": extracted_mid,
                     "url": url_val,
@@ -483,16 +493,32 @@ def main() -> int:
     storage.abort_incomplete_multipart_uploads()
 
     results = []
+    enabled_count = 0
     for channel in channels_data:
         if not channel.get("enabled", True):
             logger.info(f"Skipping disabled channel: {channel.get('name')}")
             continue
+        enabled_count += 1
         try:
             res = sync_single_bilibili_channel(channel, cfg, storage, fetcher, force=args.force)
             if res:
                 results.append(res)
         except Exception as e:
             logger.error(f"Error syncing channel {channel.get('name')}: {e}", exc_info=True)
+
+    if len(results) == enabled_count and results:
+        try:
+            persisted_ids = storage.list_persisted_channels(platform="bilibili")
+            active_ids = {r["id"] for r in results}
+            unsubscribed_ids = sorted(persisted_ids - active_ids)
+            for unsub_id in unsubscribed_ids:
+                logger.warning(
+                    f"[{unsub_id}] Bilibili channel is no longer in active configuration. "
+                    f"Clearing feed XML while preserving R2 audio files."
+                )
+                storage.remove_channel_feed(unsub_id)
+        except Exception as e:
+            logger.warning(f"Error checking unsubscribed Bilibili channels: {e}")
 
     logger.info(f"Finished Bilibili Podcast Sync. Successfully processed {len(results)}/{len(channels_data)} channel(s).")
 

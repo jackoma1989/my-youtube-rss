@@ -30,13 +30,19 @@ def sync_single_channel(
     channel_id = channel_cfg.id
     logger.info(f"--- Processing Channel: [{channel_id}] ({channel_cfg.url}) ---")
 
-    # 1. Load known episodes and ignored list for this channel
+    # 1. Query YouTube channel for latest videos
+    channel_info, entries = yt.get_channel_info_and_entries(channel_cfg)
+    if channel_id in ("default", "podcast") and channel_info.get("title"):
+        from .config import sanitize_channel_id
+        channel_id = sanitize_channel_id(channel_info["title"])
+        channel_cfg.id = channel_id
+        logger.info(f"Auto-recognized pinyin channel ID from YouTube title: [{channel_id}]")
+
+    # 2. Load known episodes and ignored list for this channel
     known_episodes = storage.load_episodes_manifest(channel_id)
     known_by_id = {ep.video_id: ep for ep in known_episodes}
     ignored_videos = storage.load_ignored_videos(channel_id)
 
-    # 2. Query YouTube channel for latest videos
-    channel_info, entries = yt.get_channel_info_and_entries(channel_cfg)
     if not entries:
         logger.warning(f"No video entries found for channel [{channel_id}].")
         return {"id": channel_id, "title": channel_info["title"], "feed_url": "", "new": 0, "total": len(known_episodes)}
