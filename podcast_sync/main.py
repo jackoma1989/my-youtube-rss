@@ -335,6 +335,10 @@ def sync():
     if args.dry_run:
         config.dry_run = True
 
+    if not config.channels:
+        logger.info("No YouTube channels configured in YOUTUBE_CHANNEL_URL environment variables or channels.json. Skipping sync gracefully.")
+        return
+
     config.validate()
 
     channels_to_process = config.channels
@@ -363,11 +367,11 @@ def sync():
         except Exception as e:
             logger.error(f"Failed to sync channel [{channel_cfg.id}]: {e}", exc_info=True)
 
-    # Reconcile unsubscribed channels: detect channels previously active on R2 but now removed from config
+    # Reconcile unsubscribed YouTube channels: detect YouTube channels previously active on R2 but now removed from config
     unsubscribed_results = []
     if not args.channel_id:
         try:
-            persisted_channel_ids = storage.list_persisted_channels()
+            persisted_channel_ids = storage.list_persisted_channels(platform="youtube")
             active_channel_ids = {ch.id for ch in channels_to_process}
             unsubscribed_ids = sorted(persisted_channel_ids - active_channel_ids)
 

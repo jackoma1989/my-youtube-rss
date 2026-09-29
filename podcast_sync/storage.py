@@ -433,31 +433,47 @@ class StorageManager:
             logger.warning(f"Error cleaning legacy root audio: {e}")
         return deleted_count
 
-    def list_persisted_channels(self) -> set:
-        """List all channel IDs that have existing data in R2 channels/ or local output."""
-        channels = set()
+    def list_persisted_channels(self, platform: Optional[str] = None) -> set:
+        """List channel IDs that have existing data in R2 channels/ or local output, optionally filtered by platform."""
+        candidates = set()
         if self.config.dry_run or not self.s3_client:
             channels_dir = self.config.output_dir
             if channels_dir.exists():
                 for p in channels_dir.iterdir():
                     if p.is_dir() and (p / "episodes.json").exists():
-                        channels.add(p.name)
-            return channels
+                        candidates.add(p.name)
+        else:
+            try:
+                response = self.s3_client.list_objects_v2(
+                    Bucket=self.config.r2_bucket_name,
+                    Prefix="channels/",
+                    Delimiter="/",
+                )
+                for prefix in response.get("CommonPrefixes", []):
+                    parts = prefix["Prefix"].strip("/").split("/")
+                    if len(parts) >= 2 and parts[1]:
+                        candidates.add(parts[1])
+            except Exception as e:
+                logger.warning(f"Failed to list persisted channels from R2: {e}")
 
-        try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.config.r2_bucket_name,
-                Prefix="channels/",
-                Delimiter="/",
-            )
-            for prefix in response.get("CommonPrefixes", []):
-                parts = prefix["Prefix"].strip("/").split("/")
-                if len(parts) >= 2 and parts[1]:
-                    channels.add(parts[1])
-        except Exception as e:
-            logger.warning(f"Failed to list persisted channels from R2: {e}")
+        if not platform:
+            return candidates
 
-        return channels
+        platform = platform.lower()
+        filtered = set()
+        for cid in candidates:
+            episodes = self.load_episodes_manifest(cid)
+            if not episodes:
+                continue
+            sample_url = (episodes[0].webpage_url or "").lower()
+            if platform == "youtube" and ("youtube.com" in sample_url or "youtu.be" in sample_url):
+                filtered.add(cid)
+            elif platform == "douyin" and "douyin.com" in sample_url:
+                filtered.add(cid)
+            elif platform == "bilibili" and "bilibili.com" in sample_url:
+                filtered.add(cid)
+
+        return filtered
 
     def remove_channel_feed(self, channel_id: str) -> bool:
         """

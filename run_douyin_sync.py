@@ -147,6 +147,22 @@ def prune_icloud_folder(icloud_dir: Path, retained_episodes: List[PodcastEpisode
     return deleted_count
 
 
+KNOWN_DOUYIN_PRESETS = {
+    "MS4wLjABAAAAfvBbG3svnuAlE41qFjO64nq5H7NBU7y6b17PeY-Mi7c": {
+        "id": "caijinglukou",
+        "name": "路口大爷",
+        "category": "Business",
+        "description": "路口大爷（抖音号：caijinglukouDY）音频播客。专注于宏观经济政策解读、产业趋势分析与商业企业观察。",
+    },
+    "MS4wLjABAAAAXXVrVvbTDOhdGW_LzlSDkdN2hZT_CRXmzzafGN-GIbkV6skPAaH2uANSFru076ZT": {
+        "id": "geekerwan",
+        "name": "极客湾Geekerwan",
+        "category": "Technology",
+        "description": "极客湾Geekerwan 抖音音频播客",
+    },
+}
+
+
 async def sync_channel(
     channel: dict,
     cfg: Config,
@@ -155,16 +171,14 @@ async def sync_channel(
     fetcher: DouyinFetcher,
     force: bool = False,
 ) -> bool:
-    channel_id = channel.get("id")
-    channel_name = channel.get("name", channel_id)
-    sec_uid = channel.get("sec_uid", "").strip()
-    url = channel.get("url", "").strip()
+    channel_id = channel.get("id") or "douyin_channel"
+    channel_name = channel.get("name") or channel_id
+    sec_uid = (channel.get("sec_uid") or "").strip()
+    url = (channel.get("url") or "").strip()
     max_episodes = int(channel.get("max_episodes", 15))
     category = channel.get("category", "Business")
     language = channel.get("language", "zh-cn")
-    description = channel.get("description", f"{channel_name} 抖音音频播客")
-
-    logger.info(f"=== Starting sync for [{channel_name}] ({channel_id}) ===")
+    description = channel.get("description") or f"{channel_name} 抖音音频播客"
 
     # 1. Resolve sec_uid if needed
     if not sec_uid or sec_uid.startswith("http"):
@@ -177,30 +191,48 @@ async def sync_channel(
             logger.error(f"Failed to resolve sec_uid for [{channel_name}] from '{url}'")
             return False
 
-    # 2. Load existing manifest from R2
-    manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
-    logger.info(f"[{channel_id}] Current R2 manifest has {len(manifest)} episode(s).")
+    # Apply known preset metadata if sec_uid matches an existing channel
+    if sec_uid in KNOWN_DOUYIN_PRESETS:
+        preset = KNOWN_DOUYIN_PRESETS[sec_uid]
+        if channel_id.startswith("douyin_"):
+            channel_id = preset["id"]
+            channel["id"] = channel_id
+        if not channel.get("name") or channel_name.startswith("douyin_"):
+            channel_name = preset["name"]
+            channel["name"] = channel_name
+        category = channel.get("category") or preset["category"]
+        description = channel.get("description") or preset["description"]
 
-    # Seed local database with any known episodes from manifest
-    db.sync_from_manifest(channel_id, manifest)
-    seen_ids = db.get_seen_ids(channel_id)
+    logger.info(f"=== Starting sync for [{channel_name}] ({channel_id}) ===")
 
-    # 3. Fetch latest creator posts from Douyin API
+    # 2. Fetch latest creator posts from Douyin API
     posts = await fetcher.fetch_creator_posts(sec_user_id=sec_uid, max_posts=max_episodes)
     if not posts:
         logger.warning(f"[{channel_name}] No posts fetched from Douyin API. Skipping.")
         return False
 
-    # Auto-detect creator name from posts if unset (e.g. added via GitHub Secret)
-    if not channel.get("name") and posts:
+    # Auto-detect creator name and pinyin ID from posts if added via GitHub Secret with URL only
+    if (not channel.get("name") or channel_name.startswith("douyin_")) and posts:
         author_name = posts[0].get("author_name")
         if author_name:
             channel_name = author_name
             channel["name"] = author_name
             description = f"{channel_name} 抖音音频播客"
             logger.info(f"Auto-detected creator name: {channel_name}")
+            if channel_id.startswith("douyin_"):
+                channel_id = sanitize_channel_id(author_name)
+                channel["id"] = channel_id
+                logger.info(f"Auto-generated pinyin channel ID: {channel_id}")
 
     logger.info(f"[{channel_name}] Fetched {len(posts)} recent post(s) from Douyin.")
+
+    # 3. Load existing manifest from R2
+    manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
+    logger.info(f"[{channel_id}] Current R2 manifest has {len(manifest)} episode(s).")
+
+    # Seed local database with any known episodes from manifest
+    db.sync_from_manifest(channel_id, manifest)
+    seen_ids = db.get_seen_ids(channel_id)
 
     # 4. Handle channel cover image
     channel_output_dir = cfg.output_dir / channel_id
@@ -444,38 +476,78 @@ async def main_async(args: argparse.Namespace) -> int:
         for env_k, env_v in os.environ.items()
         if env_k.startswith("DOUYIN_CHANNEL_URL") and env_v.strip()
     ]
+    def _sort_key(item):
+        suffix = item[0].replace("DOUYIN_CHANNEL_URL", "").strip("_")
+        return int(suffix) if suffix.isdigit() else 0
+    env_channel_items.sort(key=_sort_key)
+
+    active_json_channels = [c for c in channels_data if c.get("enabled", True)]
+    if not env_channel_items and not active_json_channels:
+        logger.info("No Douyin channels configured in DOUYIN_CHANNEL_URL environment variables or douyin_channels.json. Skipping sync gracefully.")
+        return 0
 
     if env_channel_items:
         json_by_url = {ch.get("url", "").rstrip("/"): ch for ch in channels_data if ch.get("url")}
         json_by_sec = {ch.get("sec_uid", ""): ch for ch in channels_data if ch.get("sec_uid")}
         merged_channels = []
+        seen_urls = set()
         for env_k, url_val in env_channel_items:
             norm_url = url_val.rstrip("/")
+            if norm_url in seen_urls:
+                continue
+            seen_urls.add(norm_url)
+
             matched = json_by_url.get(norm_url)
             if not matched:
                 for sec, ch in json_by_sec.items():
                     if sec and sec in url_val:
                         matched = ch
                         break
+            if not matched:
+                for sec, preset in KNOWN_DOUYIN_PRESETS.items():
+                    if sec in url_val:
+                        matched = {
+                            "id": preset["id"],
+                            "name": preset["name"],
+                            "sec_uid": sec,
+                            "url": url_val,
+                            "max_episodes": int(os.environ.get("MAX_EPISODES", 15)),
+                            "category": preset["category"],
+                            "language": "zh-cn",
+                            "description": preset["description"],
+                            "icloud_backup": True,
+                            "enabled": True,
+                        }
+                        break
+
+            suffix = env_k.replace("DOUYIN_CHANNEL_URL", "").strip("_")
+            custom_id = (
+                os.environ.get(f"DOUYIN_CHANNEL_ID_{suffix.upper()}")
+                or os.environ.get(f"DOUYIN_CHANNEL_ID_{suffix}")
+                or os.environ.get(f"DOUYIN_CHANNEL_ID{suffix}")
+                or (os.environ.get("DOUYIN_CHANNEL_ID") if not suffix else None)
+            )
+            custom_name = (
+                os.environ.get(f"DOUYIN_CHANNEL_NAME_{suffix.upper()}")
+                or os.environ.get(f"DOUYIN_CHANNEL_NAME_{suffix}")
+                or os.environ.get(f"DOUYIN_CHANNEL_NAME{suffix}")
+                or (os.environ.get("DOUYIN_CHANNEL_NAME") if not suffix else None)
+            )
+
             if matched:
-                merged_channels.append(matched)
+                ch_copy = dict(matched)
+                if custom_id:
+                    ch_copy["id"] = sanitize_channel_id(custom_id)
+                if custom_name:
+                    ch_copy["name"] = custom_name
+                ch_copy["max_episodes"] = int(os.environ.get("MAX_EPISODES", ch_copy.get("max_episodes", 15)))
+                ch_copy["enabled"] = True
+                merged_channels.append(ch_copy)
             else:
-                suffix = env_k.replace("DOUYIN_CHANNEL_URL", "").strip("_")
-                custom_id = (
-                    os.environ.get(f"DOUYIN_CHANNEL_ID_{suffix.upper()}")
-                    or os.environ.get(f"DOUYIN_CHANNEL_ID{suffix}")
-                    or (os.environ.get("DOUYIN_CHANNEL_ID") if not suffix else None)
-                )
                 if custom_id:
                     raw_id = sanitize_channel_id(custom_id)
                 else:
                     raw_id = f"douyin_{suffix.lower()}" if suffix else "douyin_channel"
-
-                custom_name = (
-                    os.environ.get(f"DOUYIN_CHANNEL_NAME_{suffix.upper()}")
-                    or os.environ.get(f"DOUYIN_CHANNEL_NAME{suffix}")
-                    or (os.environ.get("DOUYIN_CHANNEL_NAME") if not suffix else None)
-                )
 
                 merged_channels.append({
                     "id": raw_id,
@@ -484,23 +556,15 @@ async def main_async(args: argparse.Namespace) -> int:
                     "max_episodes": int(os.environ.get("MAX_EPISODES", 15)),
                     "category": os.environ.get("PODCAST_CATEGORY", "Business"),
                     "language": os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
+                    "icloud_backup": True,
                     "enabled": True,
                 })
-
-        # Keep other enabled channels from douyin_channels.json that were not already in merged_channels
-        seen_urls = {ch.get("url", "").rstrip("/") for ch in merged_channels}
-        seen_secs = {ch.get("sec_uid", "") for ch in merged_channels if ch.get("sec_uid")}
-        for ch in [c for c in channels_data if c.get("enabled", True)]:
-            ch_url = ch.get("url", "").rstrip("/")
-            ch_sec = ch.get("sec_uid", "")
-            if ch_url not in seen_urls and (not ch_sec or ch_sec not in seen_secs):
-                merged_channels.append(ch)
 
         channels_data = merged_channels
 
     if not channels_data:
-        logger.error(f"No channels found in {config_file} or DOUYIN_CHANNEL_URL environment variables.")
-        return 1
+        logger.info(f"No Douyin channels configured in {config_file} or DOUYIN_CHANNEL_URL environment variables. Exiting gracefully.")
+        return 0
 
     setup_network_proxy()
 
@@ -519,7 +583,6 @@ async def main_async(args: argparse.Namespace) -> int:
         return 1
 
     target_channel_id = args.channel.strip().lower() if args.channel else None
-    channels_modified = False
 
     for ch in channels_data:
         ch_id = ch.get("id", "").strip().lower()
@@ -530,8 +593,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if target_channel_id and ch_id != target_channel_id:
             continue
 
-        sec_uid_before = ch.get("sec_uid")
-        success = await sync_channel(
+        await sync_channel(
             channel=ch,
             cfg=cfg,
             storage=storage,
@@ -539,15 +601,6 @@ async def main_async(args: argparse.Namespace) -> int:
             fetcher=fetcher,
             force=args.force,
         )
-
-        if ch.get("sec_uid") != sec_uid_before:
-            channels_modified = True
-
-    # Persist any auto-resolved sec_uids back to douyin_channels.json
-    if channels_modified and not args.dry_run:
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(channels_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Updated {config_file} with newly resolved sec_uids.")
 
     return 0
 

@@ -28,13 +28,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check Douyin Channel Configuration
+        id: check_channels
+        env:
+          DOUYIN_CHANNEL_URL: ${{ secrets.DOUYIN_CHANNEL_URL }}
+          DOUYIN_CHANNEL_URL_1: ${{ secrets.DOUYIN_CHANNEL_URL_1 }}
+          DOUYIN_CHANNEL_URL_2: ${{ secrets.DOUYIN_CHANNEL_URL_2 }}
+          DOUYIN_CHANNEL_URL_3: ${{ secrets.DOUYIN_CHANNEL_URL_3 }}
+          DOUYIN_CHANNEL_URL_4: ${{ secrets.DOUYIN_CHANNEL_URL_4 }}
+          DOUYIN_CHANNEL_URL_5: ${{ secrets.DOUYIN_CHANNEL_URL_5 }}
+          DOUYIN_CHANNEL_URL_6: ${{ secrets.DOUYIN_CHANNEL_URL_6 }}
+          DOUYIN_CHANNEL_URL_7: ${{ secrets.DOUYIN_CHANNEL_URL_7 }}
+          DOUYIN_CHANNEL_URL_8: ${{ secrets.DOUYIN_CHANNEL_URL_8 }}
+          DOUYIN_CHANNEL_URL_9: ${{ secrets.DOUYIN_CHANNEL_URL_9 }}
+          DOUYIN_CHANNEL_URL_10: ${{ secrets.DOUYIN_CHANNEL_URL_10 }}
+        run: |
+          HAS_ENV=$(env | grep -E '^DOUYIN_CHANNEL_URL(_[0-9]+)?=.+' || true)
+          HAS_JSON=$(python3 -c "import json, pathlib; p=pathlib.Path('douyin_channels.json'); data=json.loads(p.read_text()) if p.exists() else []; print('yes' if any(c.get('enabled', True) for c in data if isinstance(c, dict)) else '')" 2>/dev/null || true)
+          if [ -n "$HAS_ENV" ] || [ -n "$HAS_JSON" ]; then
+            echo "has_channels=true" >> "$GITHUB_OUTPUT"
+            echo "Active Douyin channel configuration detected."
+          else
+            echo "has_channels=false" >> "$GITHUB_OUTPUT"
+            echo "No Douyin channels configured in Secrets or douyin_channels.json. Skipping sync gracefully."
+          fi
+
       - name: Set up Python
+        if: steps.check_channels.outputs.has_channels == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install Python dependencies
+        if: steps.check_channels.outputs.has_channels == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -44,7 +71,7 @@ jobs:
           fi
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
-        if: ${{ env.TAILSCALE_AUTH_KEY != '' }}
+        if: steps.check_channels.outputs.has_channels == 'true' && env.TAILSCALE_AUTH_KEY != ''
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
@@ -88,6 +115,7 @@ jobs:
           fi
 
       - name: Run Douyin Podcast Sync
+        if: steps.check_channels.outputs.has_channels == 'true'
         env:
           DOUYIN_COOKIE: ${{ secrets.DOUYIN_COOKIE }}
           CHINA_PROXY: ${{ secrets.CHINA_PROXY }}

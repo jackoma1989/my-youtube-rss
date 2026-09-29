@@ -18,35 +18,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check YouTube Channel Configuration
+        id: check_channels
+        env:
+          YOUTUBE_CHANNEL_URL: ${{ secrets.YOUTUBE_CHANNEL_URL }}
+          YOUTUBE_CHANNEL_URL_1: ${{ secrets.YOUTUBE_CHANNEL_URL_1 }}
+          YOUTUBE_CHANNEL_URL_2: ${{ secrets.YOUTUBE_CHANNEL_URL_2 }}
+          YOUTUBE_CHANNEL_URL_3: ${{ secrets.YOUTUBE_CHANNEL_URL_3 }}
+          YOUTUBE_CHANNEL_URL_4: ${{ secrets.YOUTUBE_CHANNEL_URL_4 }}
+          YOUTUBE_CHANNEL_URL_5: ${{ secrets.YOUTUBE_CHANNEL_URL_5 }}
+          YOUTUBE_CHANNEL_URL_6: ${{ secrets.YOUTUBE_CHANNEL_URL_6 }}
+          YOUTUBE_CHANNEL_URL_7: ${{ secrets.YOUTUBE_CHANNEL_URL_7 }}
+          YOUTUBE_CHANNEL_URL_8: ${{ secrets.YOUTUBE_CHANNEL_URL_8 }}
+          YOUTUBE_CHANNEL_URL_9: ${{ secrets.YOUTUBE_CHANNEL_URL_9 }}
+          YOUTUBE_CHANNEL_URL_10: ${{ secrets.YOUTUBE_CHANNEL_URL_10 }}
+        run: |
+          HAS_ENV=$(env | grep -E '^YOUTUBE_CHANNEL_URL(_[0-9]+)?=.+' || true)
+          HAS_JSON=$(python3 -c "import json, pathlib; p=pathlib.Path('channels.json'); data=json.loads(p.read_text()) if p.exists() else []; print('yes' if any(c.get('enabled', True) for c in data if isinstance(c, dict)) else '')" 2>/dev/null || true)
+          if [ -n "$HAS_ENV" ] || [ -n "$HAS_JSON" ]; then
+            echo "has_channels=true" >> "$GITHUB_OUTPUT"
+            echo "Active YouTube channel configuration detected."
+          else
+            echo "has_channels=false" >> "$GITHUB_OUTPUT"
+            echo "No YouTube channels configured in Secrets or channels.json. Skipping sync gracefully."
+          fi
+
       - name: Set up Python
+        if: steps.check_channels.outputs.has_channels == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install system dependencies (ffmpeg)
+        if: steps.check_channels.outputs.has_channels == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
       - name: Setup Deno
+        if: steps.check_channels.outputs.has_channels == 'true'
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
       - name: Install Python dependencies
+        if: steps.check_channels.outputs.has_channels == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -U --pre "yt-dlp[default]"
           pip install -r requirements.txt
 
       - name: Run Podcast Sync
+        if: steps.check_channels.outputs.has_channels == 'true'
         env:
           YOUTUBE_CHANNEL_URL: ${{ secrets.YOUTUBE_CHANNEL_URL }}
+          YOUTUBE_CHANNEL_URL_1: ${{ secrets.YOUTUBE_CHANNEL_URL_1 }}
           YOUTUBE_CHANNEL_URL_2: ${{ secrets.YOUTUBE_CHANNEL_URL_2 }}
           YOUTUBE_CHANNEL_URL_3: ${{ secrets.YOUTUBE_CHANNEL_URL_3 }}
           YOUTUBE_CHANNEL_URL_4: ${{ secrets.YOUTUBE_CHANNEL_URL_4 }}
           YOUTUBE_CHANNEL_URL_5: ${{ secrets.YOUTUBE_CHANNEL_URL_5 }}
+          YOUTUBE_CHANNEL_URL_6: ${{ secrets.YOUTUBE_CHANNEL_URL_6 }}
+          YOUTUBE_CHANNEL_URL_7: ${{ secrets.YOUTUBE_CHANNEL_URL_7 }}
+          YOUTUBE_CHANNEL_URL_8: ${{ secrets.YOUTUBE_CHANNEL_URL_8 }}
+          YOUTUBE_CHANNEL_URL_9: ${{ secrets.YOUTUBE_CHANNEL_URL_9 }}
+          YOUTUBE_CHANNEL_URL_10: ${{ secrets.YOUTUBE_CHANNEL_URL_10 }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

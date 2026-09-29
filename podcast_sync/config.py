@@ -25,8 +25,14 @@ def load_env_file(dotenv_path: Path) -> None:
 
 
 def sanitize_channel_id(raw_id: str) -> str:
-    """Ensure channel ID is safe for URLs and filenames."""
-    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", raw_id)
+    """Ensure channel ID is safe for URLs and filenames (converts Chinese to pinyin automatically)."""
+    decoded = urllib.parse.unquote(raw_id or "").strip().lstrip("@")
+    try:
+        from pypinyin import lazy_pinyin
+        decoded = "".join(lazy_pinyin(decoded))
+    except Exception:
+        pass
+    cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", decoded)
     return cleaned.lower() if cleaned else "podcast"
 
 
@@ -105,7 +111,7 @@ class Config:
         output_dir_str = os.environ.get("OUTPUT_DIR", "./output").strip()
         public_url = os.environ.get("R2_PUBLIC_URL", "").strip().rstrip("/")
 
-        # Load channels from channels.json
+        # Load optional channels from channels.json (empty by default)
         json_channels: List[ChannelConfig] = []
         if channels_file is None:
             channels_file = Path("channels.json")
@@ -116,20 +122,24 @@ class Config:
                     items = json.load(f)
                     if isinstance(items, list):
                         for item in items:
-                            if isinstance(item, dict) and item.get("url"):
+                            if isinstance(item, dict) and item.get("url") and item.get("enabled", True):
                                 json_channels.append(ChannelConfig.from_dict(item))
             except Exception as e:
                 print(f"Warning: Failed to parse {channels_file}: {e}")
 
-        # Check if active channels are configured via GitHub Secrets / environment variables
+        # Active channels configured via GitHub Secrets / environment variables (YOUTUBE_CHANNEL_URL*)
         env_channel_items = [
             (env_key, env_val.strip())
             for env_key, env_val in os.environ.items()
             if env_key.startswith("YOUTUBE_CHANNEL_URL") and env_val.strip()
         ]
+        def _sort_key(item):
+            suffix = item[0].replace("YOUTUBE_CHANNEL_URL", "").strip("_")
+            return int(suffix) if suffix.isdigit() else 0
+        env_channel_items.sort(key=_sort_key)
 
         if env_channel_items:
-            # When Secrets are provided, Secrets act as the authoritative list of active channels!
+            # Secrets act as the authoritative list of active channels
             channels: List[ChannelConfig] = []
             json_by_norm_url = {
                 urllib.parse.unquote(ch.url).lower().rstrip("/"): ch
@@ -143,23 +153,42 @@ class Config:
                     continue
                 seen_urls.add(norm_url)
 
+                suffix = env_key.replace("YOUTUBE_CHANNEL_URL", "").strip("_")
+                custom_id = (
+                    os.environ.get(f"YOUTUBE_CHANNEL_ID_{suffix.upper()}")
+                    or os.environ.get(f"YOUTUBE_CHANNEL_ID_{suffix}")
+                    or os.environ.get(f"YOUTUBE_CHANNEL_ID{suffix}")
+                    or (os.environ.get("YOUTUBE_CHANNEL_ID") if not suffix else None)
+                )
+                custom_name = (
+                    os.environ.get(f"YOUTUBE_CHANNEL_NAME_{suffix.upper()}")
+                    or os.environ.get(f"YOUTUBE_CHANNEL_NAME_{suffix}")
+                    or os.environ.get(f"YOUTUBE_CHANNEL_NAME{suffix}")
+                    or (os.environ.get("YOUTUBE_CHANNEL_NAME") if not suffix else None)
+                )
+
                 if norm_url in json_by_norm_url:
-                    # Inherit metadata (custom id, name, category) from channels.json
-                    channels.append(json_by_norm_url[norm_url])
+                    ch_obj = json_by_norm_url[norm_url]
+                    if custom_id:
+                        ch_obj.id = sanitize_channel_id(custom_id)
+                    if custom_name:
+                        ch_obj.name = custom_name
+                    channels.append(ch_obj)
                 else:
-                    raw_id = "channel"
-                    if "@" in url_val:
-                        raw_id = url_val.split("@")[-1].split("/")[0].split("?")[0]
-                    elif "channel/" in url_val:
-                        raw_id = url_val.split("channel/")[-1].split("/")[0].split("?")[0]
-                    else:
-                        suffix = env_key.replace("YOUTUBE_CHANNEL_URL", "").strip("_").lower()
-                        raw_id = f"channel_{suffix}" if suffix else "default"
+                    raw_id = custom_id or ""
+                    if not raw_id:
+                        if "@" in url_val:
+                            raw_id = url_val.split("@")[-1].split("/")[0].split("?")[0]
+                        elif "channel/" in url_val:
+                            raw_id = url_val.split("channel/")[-1].split("/")[0].split("?")[0]
+                        else:
+                            raw_id = f"channel_{suffix.lower()}" if suffix else "default"
 
                     channels.append(
                         ChannelConfig(
                             id=sanitize_channel_id(raw_id),
                             url=url_val,
+                            name=custom_name,
                             max_episodes=int(os.environ.get("MAX_EPISODES", 15)),
                             category=os.environ.get("PODCAST_CATEGORY", "News"),
                             language=os.environ.get("PODCAST_LANGUAGE", "zh-cn"),
@@ -183,11 +212,9 @@ class Config:
         )
 
     def validate(self) -> None:
-        """Validate required configuration."""
+        """Validate required configuration when channels are present."""
         if not self.channels:
-            raise ValueError(
-                "No YouTube channels configured. Please add channels to channels.json or set YOUTUBE_CHANNEL_URL."
-            )
+            return
 
         for ch in self.channels:
             if not ch.url:
