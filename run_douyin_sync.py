@@ -21,6 +21,7 @@ from podcast_sync.douyin_fetcher import DouyinFetcher
 from podcast_sync.feed import (
     PodcastChannel,
     PodcastEpisode,
+    ensure_podcast_cover_compliance,
     generate_podcast_rss,
     validate_podcast_rss,
 )
@@ -219,6 +220,7 @@ async def sync_channel(
             avatar_url = p.get("avatar_url")
             if avatar_url:
                 if fetcher.download_image(avatar_url, cover_file):
+                    ensure_podcast_cover_compliance(cover_file)
                     storage.upload_cover(cover_file, channel_id)
                     break
 
@@ -329,7 +331,7 @@ async def sync_channel(
             audio_filename=f"audio/{channel_id}/{vid}.mp3",
             audio_url=r2_audio_url,
             file_size_bytes=file_size,
-            thumbnail_url=post["cover_url"],
+            thumbnail_url=None,
             webpage_url=post["webpage_url"],
         )
 
@@ -410,6 +412,13 @@ async def sync_channel(
     validate_podcast_rss(rss_xml, channel_id, expected_count=len(retained))
     feed_url = storage.upload_channel_feed(channel_id, rss_xml)
     logger.info(f"[{channel_name}] RSS Feed successfully published: {feed_url}")
+
+    # Also maintain legacy alias feeds on R2 for backwards compatibility
+    legacy_aliases = {"lukoudaye": "caijinglukou", "jikewangeekerwan": "geekerwan"}
+    if channel_id in legacy_aliases:
+        alias_id = legacy_aliases[channel_id]
+        alias_url = storage.upload_channel_feed(alias_id, rss_xml)
+        logger.info(f"[{channel_name}] Also published legacy alias feed: {alias_url}")
 
     # 11. Send Telegram Notification for new episodes
     if not cfg.dry_run and cfg.telegram_bot_token and cfg.telegram_chat_id:
@@ -570,7 +579,7 @@ async def main_async(args: argparse.Namespace) -> int:
     if not target_channel_id and all_resolved and active_channel_ids:
         try:
             persisted_ids = storage.list_persisted_channels(platform="douyin")
-            unsubscribed_ids = sorted(persisted_ids - active_channel_ids)
+            unsubscribed_ids = sorted(persisted_ids - active_channel_ids - {"caijinglukou", "geekerwan"})
             for unsub_id in unsubscribed_ids:
                 logger.warning(
                     f"[{unsub_id}] Douyin channel is no longer in active configuration. "

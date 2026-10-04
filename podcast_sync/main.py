@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ChannelConfig, Config
-from .feed import PodcastChannel, PodcastEpisode, PodcastTranscript, generate_podcast_rss, validate_podcast_rss
+from .feed import (
+    PodcastChannel,
+    PodcastEpisode,
+    PodcastTranscript,
+    ensure_podcast_cover_compliance,
+    generate_podcast_rss,
+    validate_podcast_rss,
+)
 from .notifier import send_new_episode_notification
 from .storage import StorageManager
 from .youtube import YouTubeFetcher
@@ -56,9 +63,11 @@ def sync_single_channel(
     if not storage.cover_exists(channel_id):
         raw_img = channel_info.get("image_url")
         if raw_img and yt.download_image(raw_img, cover_file):
+            ensure_podcast_cover_compliance(cover_file)
             storage.upload_cover(cover_file, channel_id)
             logger.info(f"[{channel_id}] Uploaded channel cover to R2: {channel_cover_url}")
         elif cover_file.exists():
+            ensure_podcast_cover_compliance(cover_file)
             storage.upload_cover(cover_file, channel_id)
             logger.info(f"[{channel_id}] Uploaded local cover to R2: {channel_cover_url}")
 

@@ -120,6 +120,26 @@ def format_duration(seconds: int) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+def ensure_podcast_cover_compliance(cover_path, min_size: int = 1400) -> bool:
+    """Ensure a podcast cover image meets Apple Podcasts requirement (square, RGB, >= 1400x1400)."""
+    try:
+        from pathlib import Path
+        from PIL import Image
+        p = Path(cover_path)
+        if not p.exists():
+            return False
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            if w < min_size or h < min_size or w != h:
+                target_size = max(w, h, min_size)
+                resized = im.resize((target_size, target_size), Image.Resampling.LANCZOS)
+                resized.save(p, format="JPEG", quality=95)
+        return True
+    except Exception:
+        return False
+
+
 def generate_podcast_rss(channel: PodcastChannel) -> str:
     """Generate an Apple Podcasts-compliant RSS 2.0 XML string."""
     ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"

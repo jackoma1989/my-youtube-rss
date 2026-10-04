@@ -144,8 +144,12 @@ class DouyinFetcher:
                 cover_url = cover_urls[0] if cover_urls else ""
 
                 author = item.get("author", {})
-                avatar_thumb = author.get("avatar_thumb", {}).get("url_list", [])
-                avatar_url = avatar_thumb[0] if avatar_thumb else ""
+                avatar_urls = (
+                    author.get("avatar_larger", {}).get("url_list", [])
+                    or author.get("avatar_medium", {}).get("url_list", [])
+                    or author.get("avatar_thumb", {}).get("url_list", [])
+                )
+                avatar_url = avatar_urls[0] if avatar_urls else ""
                 nickname = author.get("nickname", "抖音博主")
 
                 # Derive clean title from description

@@ -26,6 +26,7 @@ from podcast_sync.feed import (
     PodcastChannel,
     PodcastEpisode,
     PodcastTranscript,
+    ensure_podcast_cover_compliance,
     generate_podcast_rss,
     validate_podcast_rss,
 )
@@ -183,10 +184,12 @@ def sync_single_bilibili_channel(
             avatar_url = recent_videos[0].get("cover")
 
         if avatar_url and fetcher.download_image(avatar_url, cover_file):
+            ensure_podcast_cover_compliance(cover_file)
             storage.upload_cover(cover_file, channel_id)
             cover_updated = True
             logger.info(f"[{channel_name}] Uploaded new channel cover to R2: {channel_cover_url}")
         elif cover_file.exists():
+            ensure_podcast_cover_compliance(cover_file)
             storage.upload_cover(cover_file, channel_id)
             cover_updated = True
 
