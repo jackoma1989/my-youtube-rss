@@ -212,7 +212,7 @@ async def sync_channel(
     channel_output_dir = cfg.output_dir / channel_id
     channel_output_dir.mkdir(parents=True, exist_ok=True)
     cover_file = channel_output_dir / "cover.jpg"
-    channel_cover_url = f"{cfg.r2_public_url}/covers/{channel_id}.jpg"
+    channel_cover_url = f"{cfg.r2_public_url}/covers/{channel_id}_v2.jpg"
 
     # If cover doesn't exist locally, try downloading creator avatar
     if not cover_file.exists():
@@ -222,6 +222,10 @@ async def sync_channel(
                 if fetcher.download_image(avatar_url, cover_file):
                     ensure_podcast_cover_compliance(cover_file)
                     storage.upload_cover(cover_file, channel_id)
+                    try:
+                        storage.upload_cover(cover_file, f"{channel_id}_v2")
+                    except Exception:
+                        pass
                     break
 
     # 5. Clean & Deduplicate existing manifest
