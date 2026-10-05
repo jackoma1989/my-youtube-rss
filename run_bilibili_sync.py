@@ -164,8 +164,11 @@ def sync_single_bilibili_channel(
 
     # 2. Load manifest from R2
     manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
-    existing_video_ids = {ep.video_id for ep in manifest}
-    logger.info(f"[{channel_name}] Loaded {len(manifest)} existing episode(s) from R2 manifest.")
+    history_ids: set = storage.load_history_ids(channel_id)
+    for ep in manifest:
+        history_ids.add(ep.video_id)
+    existing_video_ids = {ep.video_id for ep in manifest}.union(history_ids)
+    logger.info(f"[{channel_name}] Loaded {len(manifest)} existing episode(s) from R2 manifest, {len(history_ids)} in history.")
 
     # Handle channel cover image: ensure local & R2 covers/{channel_id}.jpg exists
     cover_file = channel_output_dir / "cover.jpg"
@@ -212,11 +215,24 @@ def sync_single_bilibili_channel(
     if icloud_dir:
         icloud_dir.mkdir(parents=True, exist_ok=True)
 
+    oldest_manifest_date = min((ep.pub_date for ep in manifest), default=None) if len(manifest) >= max_episodes else None
+
     for v_entry in recent_videos[:max_episodes]:
         vid = v_entry["video_id"]
         if vid in existing_video_ids and not force:
             logger.info(f"[{channel_name}] Video [{vid}] already synced. Skipping.")
             continue
+
+        if oldest_manifest_date and v_entry.get("pub_date"):
+            v_date = v_entry["pub_date"] if v_entry["pub_date"].tzinfo else v_entry["pub_date"].replace(tzinfo=timezone.utc)
+            manifest_date = oldest_manifest_date if oldest_manifest_date.tzinfo else oldest_manifest_date.replace(tzinfo=timezone.utc)
+            if v_date <= manifest_date:
+                logger.info(
+                    f"[{channel_name}] Skipping older/pinned post [{vid}] '{v_entry.get('title', '')}' "
+                    f"({v_date.strftime('%Y-%m-%d')}) older than retention window ({manifest_date.strftime('%Y-%m-%d')})."
+                )
+                history_ids.add(vid)
+                continue
 
         logger.info(f"[{channel_name}] Downloading audio for [{vid}]...")
         dl_res = fetcher.download_audio_for_video(vid, channel_output_dir)
@@ -274,6 +290,7 @@ def sync_single_bilibili_channel(
             transcripts_checked=True,
         )
         newly_added_episodes.append(episode)
+        history_ids.add(vid)
         manifest = [ep for ep in manifest if ep.video_id != vid]
         manifest.insert(0, episode)
 
@@ -316,8 +333,9 @@ def sync_single_bilibili_channel(
             if pruned_ic > 0:
                 logger.info(f"Pruned {pruned_ic} expired episode(s) from iCloud.")
 
-    # 9. Save updated manifest
+    # 9. Save updated manifest and persistent history
     storage.save_episodes_manifest(channel_id, retained)
+    storage.save_history_ids(channel_id, history_ids)
 
     # 10. Generate and Upload Podcast RSS XML
     feed_channel = PodcastChannel(
@@ -335,9 +353,11 @@ def sync_single_bilibili_channel(
     feed_url = storage.upload_channel_feed(channel_id, rss_xml)
     logger.info(f"[{channel_name}] RSS Feed successfully published: {feed_url}")
 
-    # 11. Send Telegram Notification
+    # 11. Send Telegram Notification for new episodes that are actually retained in the feed
     if not cfg.dry_run and cfg.telegram_bot_token and cfg.telegram_chat_id:
-        for ep in newly_added_episodes:
+        retained_ids = {ep.video_id for ep in retained}
+        valid_new_episodes = [ep for ep in newly_added_episodes if ep.video_id in retained_ids]
+        for ep in valid_new_episodes:
             logger.info(f"Sending Telegram notification for [{ep.title}]...")
             send_bilibili_episode_notification(
                 bot_token=cfg.telegram_bot_token,

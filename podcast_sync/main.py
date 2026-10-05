@@ -312,10 +312,12 @@ def sync_single_channel(
     # 9. Upload feed.xml
     feed_url = storage.upload_channel_feed(channel_id, rss_xml, is_primary=is_primary)
 
-    # 10. Send Telegram notifications for new episodes (if configured)
-    if new_episodes and config.telegram_bot_token and config.telegram_chat_id:
-        logger.info(f"[{channel_id}] Sending Telegram notifications for {len(new_episodes)} new episode(s)...")
-        for new_ep in new_episodes:
+    # 10. Send Telegram notifications for new episodes (if configured and retained in feed)
+    retained_ids = {ep.video_id for ep in retained_episodes}
+    valid_new_episodes = [ep for ep in new_episodes if ep.video_id in retained_ids]
+    if valid_new_episodes and config.telegram_bot_token and config.telegram_chat_id:
+        logger.info(f"[{channel_id}] Sending Telegram notifications for {len(valid_new_episodes)} new episode(s)...")
+        for new_ep in valid_new_episodes:
             try:
                 send_new_episode_notification(
                     bot_token=config.telegram_bot_token,

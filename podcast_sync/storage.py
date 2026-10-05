@@ -171,6 +171,63 @@ class StorageManager:
         self.save_ignored_videos(channel_id, ignored)
         logger.info(f"[{channel_id}] Marked video [{video_id}] as ignored ({reason}).")
 
+    def load_history_ids(self, channel_id: str) -> set:
+        """Load persistent history of all seen/processed video IDs for a channel from R2."""
+        if self.config.dry_run or not self.s3_client:
+            local_json = self.config.output_dir / channel_id / "history.json"
+            if local_json.exists():
+                try:
+                    with open(local_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, list):
+                            return set(data)
+                except Exception as e:
+                    logger.warning(f"Failed to read local history for {channel_id}: {e}")
+            return set()
+
+        key = f"channels/{channel_id}/history.json"
+        try:
+            response = self.s3_client.get_object(
+                Bucket=self.config.r2_bucket_name,
+                Key=key,
+            )
+            content = response["Body"].read().decode("utf-8")
+            data = json.loads(content)
+            if isinstance(data, list):
+                logger.info(f"Loaded {len(data)} historical processed IDs for [{channel_id}] from {key}")
+                return set(data)
+            return set()
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                return set()
+            logger.warning(f"Error loading {key} from R2: {e}")
+            return set()
+
+    def save_history_ids(self, channel_id: str, history_ids: set) -> None:
+        """Save persistent history of seen/processed video IDs for a channel to R2 and local disk."""
+        data = sorted(list(history_ids))
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+
+        channel_output_dir = self.config.output_dir / channel_id
+        channel_output_dir.mkdir(parents=True, exist_ok=True)
+        with open(channel_output_dir / "history.json", "w", encoding="utf-8") as f:
+            f.write(json_str)
+
+        if self.config.dry_run or not self.s3_client:
+            return
+
+        key = f"channels/{channel_id}/history.json"
+        try:
+            self.s3_client.put_object(
+                Bucket=self.config.r2_bucket_name,
+                Key=key,
+                Body=json_str.encode("utf-8"),
+                ContentType="application/json; charset=utf-8",
+            )
+            logger.info(f"Saved {len(history_ids)} historical processed IDs to R2 at {key}")
+        except Exception as e:
+            logger.warning(f"Failed to save {key} to R2: {e}")
+
     def save_episodes_manifest(self, channel_id: str, episodes: List[PodcastEpisode]) -> None:
         """Save updated episodes manifest for a channel to R2 and local disk."""
         data = [ep.to_dict() for ep in episodes]

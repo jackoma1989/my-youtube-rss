@@ -200,13 +200,16 @@ async def sync_channel(
 
     logger.info(f"[{channel_name}] Fetched {len(posts)} recent post(s) from Douyin.")
 
-    # 3. Load existing manifest from R2
+    # 3. Load existing manifest and persistent history from R2
     manifest: List[PodcastEpisode] = storage.load_episodes_manifest(channel_id)
-    logger.info(f"[{channel_id}] Current R2 manifest has {len(manifest)} episode(s).")
+    history_ids: set = storage.load_history_ids(channel_id)
+    for ep in manifest:
+        history_ids.add(ep.video_id)
+    logger.info(f"[{channel_id}] Current R2 manifest has {len(manifest)} episode(s), history has {len(history_ids)} ID(s).")
 
     # Seed local database with any known episodes from manifest
     db.sync_from_manifest(channel_id, manifest)
-    seen_ids = db.get_seen_ids(channel_id)
+    seen_ids = db.get_seen_ids(channel_id).union(history_ids)
 
     # 4. Handle channel cover image
     channel_output_dir = cfg.output_dir / channel_id
@@ -247,14 +250,35 @@ async def sync_channel(
 
     # 6. Identify new episodes
     manifest_ids = {ep.video_id for ep in manifest}
+    oldest_manifest_date = min((ep.pub_date for ep in manifest), default=None) if len(manifest) >= max_episodes else None
+
     new_posts = []
     for p in posts:
         vid = p["video_id"]
         clean_p_title = sanitize_filename(p["title"]).strip().lower()
+
         # Skip if already in active manifest on R2 (by ID or title)
         if vid in manifest_ids or clean_p_title in seen_titles:
             continue
-        # Download if never seen, or forced, or if feed has fewer than max_episodes
+
+        # Skip if already processed in persistent history
+        if vid in history_ids and not force:
+            continue
+
+        # Skip if post is older than the oldest retained episode when manifest is already full (15 episodes)
+        # Prevents pinned (is_top) or old backlog videos from repeatedly downloading and pruning!
+        if oldest_manifest_date and p.get("pub_date"):
+            p_date = p["pub_date"] if p["pub_date"].tzinfo else p["pub_date"].replace(tzinfo=timezone.utc)
+            manifest_date = oldest_manifest_date if oldest_manifest_date.tzinfo else oldest_manifest_date.replace(tzinfo=timezone.utc)
+            if p_date <= manifest_date:
+                logger.info(
+                    f"[{channel_name}] Skipping older/pinned post [{vid}] '{p['title']}' "
+                    f"({p_date.strftime('%Y-%m-%d')}) older than retention window ({manifest_date.strftime('%Y-%m-%d')})."
+                )
+                history_ids.add(vid)
+                continue
+
+        # Download if genuinely a new post
         if vid not in seen_ids or force or len(manifest) + len(new_posts) < max_episodes:
             new_posts.append(p)
 
@@ -341,6 +365,7 @@ async def sync_channel(
 
         manifest.append(episode)
         newly_added_episodes.append(episode)
+        history_ids.add(vid)
 
         # Record in local SQLite database
         if not cfg.dry_run:
@@ -398,8 +423,9 @@ async def sync_channel(
             if pruned_ic > 0:
                 logger.info(f"Pruned {pruned_ic} expired episode(s) from iCloud.")
 
-    # 9. Save updated manifest to R2 and local disk
+    # 9. Save updated manifest and persistent history to R2 and local disk
     storage.save_episodes_manifest(channel_id, retained)
+    storage.save_history_ids(channel_id, history_ids)
 
     # 10. Generate and Upload Apple Podcasts RSS Feed XML
     feed_channel = PodcastChannel(
@@ -424,9 +450,11 @@ async def sync_channel(
         alias_url = storage.upload_channel_feed(alias_id, rss_xml)
         logger.info(f"[{channel_name}] Also published legacy alias feed: {alias_url}")
 
-    # 11. Send Telegram Notification for new episodes
+    # 11. Send Telegram Notification for new episodes that are actually retained in the feed
     if not cfg.dry_run and cfg.telegram_bot_token and cfg.telegram_chat_id:
-        for ep in newly_added_episodes:
+        retained_ids = {ep.video_id for ep in retained}
+        valid_new_episodes = [ep for ep in newly_added_episodes if ep.video_id in retained_ids]
+        for ep in valid_new_episodes:
             logger.info(f"Sending Telegram notification for [{ep.title}]...")
             send_douyin_episode_notification(
                 bot_token=cfg.telegram_bot_token,
