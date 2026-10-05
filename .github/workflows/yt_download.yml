@@ -1,0 +1,165 @@
+name: YouTube Video Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube 视频完整链接 (Video URL)'
+        required: true
+        type: string
+      resolution:
+        description: '最高清晰度 (Max Resolution)'
+        required: true
+        default: '1080'
+        type: choice
+        options:
+          - '1080'
+          - '720'
+          - 'best'
+          - 'audio_only'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-download
+  cancel-in-progress: false
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Setup Deno (JS Runtime for yt-dlp)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U --pre "yt-dlp[default]"
+
+      - name: Download YouTube Video
+        id: download
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+          RESOLUTION: ${{ github.event.inputs.resolution }}
+        run: |
+          mkdir -p output
+
+          COOKIE_ARG=""
+          if [ -n "$YOUTUBE_COOKIES" ]; then
+            printf "%s\n" "$YOUTUBE_COOKIES" > cookies.txt
+            COOKIE_ARG="--cookies cookies.txt"
+            echo "✅ 已启用项目配置的 YouTube Cookies 进行下载。"
+          else
+            echo "⚠️ 未检测到 YOUTUBE_COOKIES Secret，将尝试直接匿名下载。"
+          fi
+
+          if [ "$RESOLUTION" = "best" ]; then
+            FORMAT="bestvideo+bestaudio/best"
+          elif [ "$RESOLUTION" = "audio_only" ]; then
+            FORMAT="bestaudio/best"
+          else
+            FORMAT="bestvideo[height<=$RESOLUTION]+bestaudio/best[height<=$RESOLUTION]"
+          fi
+
+          echo "🚀 开始下载: $VIDEO_URL (画质: $RESOLUTION)"
+          yt-dlp $COOKIE_ARG \
+            --no-playlist \
+            -f "$FORMAT" \
+            --merge-output-format mp4 \
+            -o "output/%(title)s.%(ext)s" \
+            "$VIDEO_URL"
+
+          # 查找下载后的视频文件
+          FILE_PATH=$(find output -type f | head -n 1)
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ 未检测到下载产物文件！"
+            exit 1
+          fi
+
+          FILE_NAME=$(basename "$FILE_PATH")
+          TAG_NAME="yt-$(date +%Y%m%d-%H%M%S)"
+
+          echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
+          echo "file_name=$FILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.download.outputs.tag_name }}
+          name: "YouTube: ${{ steps.download.outputs.file_name }}"
+          files: ${{ steps.download.outputs.file_path }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Accelerated Download Links
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.download.outputs.tag_name }}
+          RAW_NAME: ${{ steps.download.outputs.file_name }}
+        run: |
+          python3 - << 'EOF'
+          import os
+          import urllib.parse
+
+          repo = os.environ.get("REPO", "")
+          tag = os.environ.get("TAG", "")
+          raw_name = os.environ.get("RAW_NAME", "")
+
+          encoded_name = urllib.parse.quote(raw_name)
+          original_url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
+
+          proxies = [
+              ("ghproxy.link (推荐，国内高速)", f"https://ghproxy.link/{original_url}"),
+              ("mirror.ghproxy.com (备用镜像1)", f"https://mirror.ghproxy.com/{original_url}"),
+              ("gh-proxy.com (备用镜像2)", f"https://gh-proxy.com/{original_url}")
+          ]
+
+          summary_content = f"""### 🎬 YouTube 视频下载已完成！
+
+- **视频名称**：`{raw_name}`
+- **Release 标签**：`{tag}`
+
+---
+
+#### 🚀 国内免翻墙直连高速下载（不走梯子流量，直接用浏览器或 IDM 下载）：
+
+"""
+          for name, url in proxies:
+              summary_content += f"- **{name}**:\n  <{url}>\n\n"
+
+          summary_content += f"""---
+#### 🌐 原始下载链接（海外/需翻墙）：
+<{original_url}>
+"""
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as f:
+                  f.write(summary_content)
+
+          print("=" * 60)
+          print(summary_content)
+          print("=" * 60)
+          EOF
