@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'YouTube 视频完整链接 (Video URL)'
+        description: 'YouTube 视频或播放列表链接 (Video or Playlist URL)'
         required: true
         type: string
       resolution:
@@ -17,6 +17,19 @@ on:
           - '720'
           - 'best'
           - 'audio_only'
+      download_playlist:
+        description: '是否下载整个播放列表 (Download entire playlist if URL has one)'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      playlist_items:
+        description: '播放列表集数范围 (例如: all, 1-6, 1)。下载单集可填 1 或指定序号'
+        required: false
+        default: 'all'
+        type: string
 
 permissions:
   contents: write
@@ -32,6 +45,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Free Disk Space (清理磁盘保证大文件下载空间)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,12 +71,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U --pre "yt-dlp[default]"
 
-      - name: Download YouTube Video
+      - name: Download YouTube Video / Playlist
         id: download
         env:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           VIDEO_URL: ${{ github.event.inputs.video_url }}
           RESOLUTION: ${{ github.event.inputs.resolution }}
+          DOWNLOAD_PLAYLIST: ${{ github.event.inputs.download_playlist }}
+          PLAYLIST_ITEMS: ${{ github.event.inputs.playlist_items }}
         run: |
           mkdir -p output
 
@@ -79,35 +99,44 @@ jobs:
             FORMAT="bestvideo[height<=$RESOLUTION]+bestaudio/best[height<=$RESOLUTION]"
           fi
 
-          echo "🚀 开始下载: $VIDEO_URL (画质: $RESOLUTION)"
+          PLAYLIST_OPTS=""
+          if [ "$DOWNLOAD_PLAYLIST" = "yes" ]; then
+            PLAYLIST_OPTS="--yes-playlist"
+            if [ -n "$PLAYLIST_ITEMS" ] && [ "$PLAYLIST_ITEMS" != "all" ]; then
+              PLAYLIST_OPTS="$PLAYLIST_OPTS --playlist-items $PLAYLIST_ITEMS"
+            fi
+          else
+            PLAYLIST_OPTS="--no-playlist"
+          fi
+
+          echo "🚀 开始下载: $VIDEO_URL"
+          echo "画质: $RESOLUTION | 播放列表模式: $DOWNLOAD_PLAYLIST (范围: $PLAYLIST_ITEMS)"
+
           yt-dlp $COOKIE_ARG \
-            --no-playlist \
+            $PLAYLIST_OPTS \
             -f "$FORMAT" \
             --merge-output-format mp4 \
-            -o "output/%(title)s.%(ext)s" \
+            -o "output/%(playlist_index&{:02d} - |)s%(title)s.%(ext)s" \
             "$VIDEO_URL"
 
-          # 查找下载后的视频文件
-          FILE_PATH=$(find output -type f | head -n 1)
-          if [ -z "$FILE_PATH" ]; then
+          COUNT=$(find output -type f | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
             echo "❌ 未检测到下载产物文件！"
             exit 1
           fi
 
-          FILE_NAME=$(basename "$FILE_PATH")
           TAG_NAME="yt-$(date +%Y%m%d-%H%M%S)"
-
-          echo "file_path=$FILE_PATH" >> "$GITHUB_OUTPUT"
-          echo "file_name=$FILE_NAME" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "✅ 下载完成，共成功下载 $COUNT 个文件。"
 
       - name: Upload to GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.download.outputs.tag_name }}
-          name: "YouTube: ${{ steps.download.outputs.file_name }}"
-          files: ${{ steps.download.outputs.file_path }}
+          name: "YouTube Download: ${{ steps.download.outputs.tag_name }} (${{ steps.download.outputs.count }} files)"
+          files: output/*
           draft: false
           prerelease: false
         env:
@@ -117,49 +146,49 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           TAG: ${{ steps.download.outputs.tag_name }}
-          RAW_NAME: ${{ steps.download.outputs.file_name }}
         run: |
           python3 - << 'EOF'
           import os
           import urllib.parse
+          from pathlib import Path
 
           repo = os.environ.get("REPO", "")
           tag = os.environ.get("TAG", "")
-          raw_name = os.environ.get("RAW_NAME", "")
+          output_dir = Path("output")
 
-          encoded_name = urllib.parse.quote(raw_name)
-          original_url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
+          files = sorted([f for f in output_dir.iterdir() if f.is_file()])
 
-          proxies = [
-              ("ghproxy.link (推荐，国内高速)", f"https://ghproxy.link/{original_url}"),
-              ("mirror.ghproxy.com (备用镜像1)", f"https://mirror.ghproxy.com/{original_url}"),
-              ("gh-proxy.com (备用镜像2)", f"https://gh-proxy.com/{original_url}")
+          summary_lines = [
+              "### 🎬 YouTube 视频下载已完成！",
+              f"- **Release 标签**：`{tag}`",
+              f"- **文件总数**：`{len(files)}` 个",
+              "",
+              "---",
+              "#### 🚀 国内免翻墙直连高速下载（不消耗梯子流量，直接用浏览器或 IDM 下载）：",
+              ""
           ]
 
-          summary_content = f"""### 🎬 YouTube 视频下载已完成！
+          for i, f in enumerate(files, 1):
+              raw_name = f.name
+              size_mb = f.stat().st_size / (1024 * 1024)
+              encoded_name = urllib.parse.quote(raw_name)
+              original_url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
+              fast_url1 = f"https://ghproxy.link/{original_url}"
+              fast_url2 = f"https://mirror.ghproxy.com/{original_url}"
 
-- **视频名称**：`{raw_name}`
-- **Release 标签**：`{tag}`
+              summary_lines.append(f"##### {i}. {raw_name} ({size_mb:.1f} MB)")
+              summary_lines.append(f"- 🚀 **高速通道 1**: <{fast_url1}>")
+              summary_lines.append(f"- 🚀 **高速通道 2**: <{fast_url2}>")
+              summary_lines.append(f"- 🌐 **原始链接 (海外)**: <{original_url}>\n")
 
----
-
-#### 🚀 国内免翻墙直连高速下载（不走梯子流量，直接用浏览器或 IDM 下载）：
-
-"""
-          for name, url in proxies:
-              summary_content += f"- **{name}**:\n  <{url}>\n\n"
-
-          summary_content += f"""---
-#### 🌐 原始下载链接（海外/需翻墙）：
-<{original_url}>
-"""
+          full_content = "\n".join(summary_lines)
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
-              with open(summary_path, "a", encoding="utf-8") as f:
-                  f.write(summary_content)
+              with open(summary_path, "a", encoding="utf-8") as sf:
+                  sf.write(full_content)
 
           print("=" * 60)
-          print(summary_content)
+          print(full_content)
           print("=" * 60)
           EOF
