@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       resolution:
-        description: '最高清晰度 (Max Resolution)'
+        description: '清晰度选择 (如已下载视频仅需补下字幕，请选 subtitles_only)'
         required: true
         default: '1080'
         type: choice
@@ -17,6 +17,7 @@ on:
           - '720'
           - 'best'
           - 'audio_only'
+          - 'subtitles_only'
       download_playlist:
         description: '是否下载整个播放列表 (Download entire playlist if URL has one)'
         required: true
@@ -29,6 +30,19 @@ on:
         description: '播放列表集数范围 (例如: all, 1-6, 1)。下载单集可填 1 或指定序号'
         required: false
         default: 'all'
+        type: string
+      download_subtitles:
+        description: '是否下载字幕 (Download Subtitles)'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      sub_langs:
+        description: '字幕语言代码 (默认: zh-Hans,en 为简体中文与英文)'
+        required: false
+        default: 'zh-Hans,en'
         type: string
 
 permissions:
@@ -71,7 +85,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U --pre "yt-dlp[default]"
 
-      - name: Download YouTube Video / Playlist
+      - name: Download YouTube Video / Subtitles
         id: download
         env:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
@@ -79,6 +93,8 @@ jobs:
           RESOLUTION: ${{ github.event.inputs.resolution }}
           DOWNLOAD_PLAYLIST: ${{ github.event.inputs.download_playlist }}
           PLAYLIST_ITEMS: ${{ github.event.inputs.playlist_items }}
+          DOWNLOAD_SUBTITLES: ${{ github.event.inputs.download_subtitles }}
+          SUB_LANGS: ${{ github.event.inputs.sub_langs || 'zh-Hans,en' }}
         run: |
           mkdir -p output
 
@@ -86,19 +102,32 @@ jobs:
           if [ -n "$YOUTUBE_COOKIES" ]; then
             printf "%s\n" "$YOUTUBE_COOKIES" > cookies.txt
             COOKIE_ARG="--cookies cookies.txt"
-            echo "✅ 已启用项目配置的 YouTube Cookies 进行下载。"
+            echo "✅ 已启用项目配置的 YouTube Cookies 进行下载认证。"
           else
             echo "⚠️ 未检测到 YOUTUBE_COOKIES Secret，将尝试直接匿名下载。"
           fi
 
-          if [ "$RESOLUTION" = "best" ]; then
-            FORMAT="bestvideo+bestaudio/best"
-          elif [ "$RESOLUTION" = "audio_only" ]; then
-            FORMAT="bestaudio/best"
-          else
-            FORMAT="bestvideo[height<=$RESOLUTION]+bestaudio/best[height<=$RESOLUTION]"
+          # 字幕参数配置
+          SUB_OPTS=""
+          if [ "$DOWNLOAD_SUBTITLES" = "yes" ]; then
+            SUB_OPTS="--write-subs --write-auto-subs --sub-langs $SUB_LANGS --convert-subs srt"
+            echo "📝 已启用字幕下载，目标语言: $SUB_LANGS (自动转为 SRT 格式)"
           fi
 
+          # 格式与清晰度配置
+          FORMAT_OPTS=""
+          if [ "$RESOLUTION" = "subtitles_only" ]; then
+            FORMAT_OPTS="--skip-download"
+            echo "⚡ 仅下载字幕模式已启用（跳过视频下载）"
+          elif [ "$RESOLUTION" = "best" ]; then
+            FORMAT_OPTS="-f bestvideo+bestaudio/best --merge-output-format mp4"
+          elif [ "$RESOLUTION" = "audio_only" ]; then
+            FORMAT_OPTS="-f bestaudio/best"
+          else
+            FORMAT_OPTS="-f bestvideo[height<=$RESOLUTION]+bestaudio/best[height<=$RESOLUTION] --merge-output-format mp4"
+          fi
+
+          # 播放列表参数配置
           PLAYLIST_OPTS=""
           if [ "$DOWNLOAD_PLAYLIST" = "yes" ]; then
             PLAYLIST_OPTS="--yes-playlist"
@@ -109,15 +138,25 @@ jobs:
             PLAYLIST_OPTS="--no-playlist"
           fi
 
-          echo "🚀 开始下载: $VIDEO_URL"
-          echo "画质: $RESOLUTION | 播放列表模式: $DOWNLOAD_PLAYLIST (范围: $PLAYLIST_ITEMS)"
-
+          echo "🚀 开始执行 yt-dlp..."
           yt-dlp $COOKIE_ARG \
             $PLAYLIST_OPTS \
-            -f "$FORMAT" \
-            --merge-output-format mp4 \
+            $SUB_OPTS \
+            $FORMAT_OPTS \
             -o "output/%(playlist_index&{:02d} - |)s%(title)s.%(ext)s" \
             "$VIDEO_URL"
+
+          # 如果有字幕文件，顺便打包一个 all_subtitles.zip 方便一键全量下载
+          python3 - << 'PYEOF'
+          import zipfile, glob, os
+          subs = sorted(glob.glob('output/*.srt') + glob.glob('output/*.vtt'))
+          if subs:
+              zip_path = 'output/all_subtitles.zip'
+              with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                  for s in subs:
+                      zf.write(s, arcname=os.path.basename(s))
+              print(f"📦 已打包 {len(subs)} 个字幕文件至 {zip_path}")
+          PYEOF
 
           COUNT=$(find output -type f | wc -l)
           if [ "$COUNT" -eq 0 ]; then
@@ -128,7 +167,7 @@ jobs:
           TAG_NAME="yt-$(date +%Y%m%d-%H%M%S)"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "✅ 下载完成，共成功下载 $COUNT 个文件。"
+          echo "✅ 全部处理完成，共生成 $COUNT 个产物文件。"
 
       - name: Upload to GitHub Release
         id: create_release
@@ -156,30 +195,45 @@ jobs:
           tag = os.environ.get("TAG", "")
           output_dir = Path("output")
 
-          files = sorted([f for f in output_dir.iterdir() if f.is_file()])
+          all_files = sorted([f for f in output_dir.iterdir() if f.is_file()])
+
+          zip_files = [f for f in all_files if f.name.endswith(".zip")]
+          video_files = [f for f in all_files if f.suffix.lower() in [".mp4", ".mkv", ".webm"]]
+          sub_files = [f for f in all_files if f.suffix.lower() in [".srt", ".vtt"]]
+          other_files = [f for f in all_files if f not in zip_files and f not in video_files and f not in sub_files]
 
           summary_lines = [
-              "### 🎬 YouTube 视频下载已完成！",
+              "### 🎬 YouTube 资源下载完成！",
               f"- **Release 标签**：`{tag}`",
-              f"- **文件总数**：`{len(files)}` 个",
+              f"- **文件总数**：`{len(all_files)}` 个",
               "",
               "---",
               "#### 🚀 国内免翻墙直连高速下载（不消耗梯子流量，直接用浏览器或 IDM 下载）：",
               ""
           ]
 
-          for i, f in enumerate(files, 1):
-              raw_name = f.name
-              size_mb = f.stat().st_size / (1024 * 1024)
-              encoded_name = urllib.parse.quote(raw_name)
-              original_url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
-              fast_url1 = f"https://ghproxy.link/{original_url}"
-              fast_url2 = f"https://mirror.ghproxy.com/{original_url}"
+          def append_file_links(file_list, category_title):
+              if not file_list:
+                  return
+              summary_lines.append(f"### {category_title}")
+              for idx, f in enumerate(file_list, 1):
+                  raw_name = f.name
+                  size_mb = f.stat().st_size / (1024 * 1024)
+                  size_str = f"{size_mb:.2f} MB" if size_mb >= 0.1 else f"{f.stat().st_size / 1024:.1f} KB"
+                  encoded_name = urllib.parse.quote(raw_name)
+                  original_url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
+                  fast_url1 = f"https://ghproxy.link/{original_url}"
+                  fast_url2 = f"https://mirror.ghproxy.com/{original_url}"
 
-              summary_lines.append(f"##### {i}. {raw_name} ({size_mb:.1f} MB)")
-              summary_lines.append(f"- 🚀 **高速通道 1**: <{fast_url1}>")
-              summary_lines.append(f"- 🚀 **高速通道 2**: <{fast_url2}>")
-              summary_lines.append(f"- 🌐 **原始链接 (海外)**: <{original_url}>\n")
+                  summary_lines.append(f"**{idx}. {raw_name}** ({size_str})")
+                  summary_lines.append(f"- 🚀 **高速通道 1**: <{fast_url1}>")
+                  summary_lines.append(f"- 🚀 **高速通道 2**: <{fast_url2}>")
+                  summary_lines.append(f"- 🌐 **原始链接 (海外)**: <{original_url}>\n")
+
+          append_file_links(zip_files, "📦 字幕全量压缩包 (一键下载全部字幕)")
+          append_file_links(video_files, "🎥 视频文件")
+          append_file_links(sub_files, "📝 独立字幕文件 (.srt)")
+          append_file_links(other_files, "📁 其他文件")
 
           full_content = "\n".join(summary_lines)
 
