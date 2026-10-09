@@ -91,11 +91,39 @@ def sync_single_channel(
             continue
 
         if video_id in ignored_videos:
-            logger.info(
-                f"[{channel_id}] Skipping ignored video: [{video_id}] {entry.get('title', '')} "
-                f"(Reason: {ignored_videos[video_id].get('reason', 'ignored')})"
-            )
-            continue
+            info = ignored_videos[video_id]
+            reason = info.get("reason", "ignored")
+            check_count = info.get("check_count", 1)
+            updated_at_str = info.get("updated_at")
+
+            # Allow automatic retry for members_only early-access videos:
+            # Many YouTubers release videos with "Members early access" (会员抢先看) for 24-72 hours.
+            should_retry = False
+            if reason == "members_only":
+                now_utc = datetime.now(timezone.utc)
+                last_checked = None
+                if updated_at_str:
+                    try:
+                        last_checked = datetime.fromisoformat(updated_at_str)
+                        if not last_checked.tzinfo:
+                            last_checked = last_checked.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        pass
+
+                hours_since_check = (now_utc - last_checked).total_seconds() / 3600 if last_checked else 999
+                if check_count < 5 and hours_since_check >= 6:
+                    should_retry = True
+                    logger.info(
+                        f"[{channel_id}] Retrying potentially early-access members video: [{video_id}] {entry.get('title', '')} "
+                        f"(previously checked {check_count} time(s), {hours_since_check:.1f}h ago)..."
+                    )
+
+            if not should_retry:
+                logger.info(
+                    f"[{channel_id}] Skipping ignored video: [{video_id}] {entry.get('title', '')} "
+                    f"(Reason: {reason}, checked {check_count} time(s))"
+                )
+                continue
 
         # New video to download and convert
         logger.info(f"[{channel_id}] Processing new video: [{video_id}] {entry.get('title', '')}")
@@ -153,6 +181,11 @@ def sync_single_channel(
             new_episodes.append(episode)
             new_count += 1
 
+            # If video was previously in ignored_videos (early access), unmark it
+            if video_id in ignored_videos:
+                storage.unmark_video_ignored(channel_id, video_id)
+                del ignored_videos[video_id]
+
             # Delete local audio file
             if local_path.exists():
                 try:
@@ -177,14 +210,28 @@ def sync_single_channel(
                 ]
             )
             if is_members_only:
-                logger.warning(f"[{channel_id}] Video [{video_id}] is restricted / members-only. Marking as ignored.")
+                info = ignored_videos.get(video_id, {})
+                prev_count = info.get("check_count", 0)
+                new_count = prev_count + 1
+                new_reason = "permanent_members_only" if new_count >= 5 else "members_only"
+                logger.warning(
+                    f"[{channel_id}] Video [{video_id}] is restricted / members-only (attempt #{new_count}). "
+                    f"Marking as {new_reason}."
+                )
                 storage.mark_video_ignored(
                     channel_id=channel_id,
                     video_id=video_id,
-                    reason="members_only",
+                    reason=new_reason,
                     title=entry.get("title", ""),
                     error=err_str,
+                    check_count=new_count,
                 )
+                ignored_videos[video_id] = {
+                    "reason": new_reason,
+                    "check_count": new_count,
+                    "title": entry.get("title", ""),
+                    "error": err_str[:200],
+                }
             else:
                 logger.error(f"[{channel_id}] Failed to process video {video_id}: {e}")
 

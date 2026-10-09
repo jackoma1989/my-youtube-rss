@@ -156,20 +156,37 @@ class StorageManager:
         logger.info(f"Saved {len(ignored)} ignored videos to R2 at {key}")
 
     def mark_video_ignored(
-        self, channel_id: str, video_id: str, reason: str = "members_only", title: str = "", error: str = ""
+        self,
+        channel_id: str,
+        video_id: str,
+        reason: str = "members_only",
+        title: str = "",
+        error: str = "",
+        check_count: int = 1,
     ) -> None:
         """Mark a video as ignored in the manifest."""
         from datetime import datetime, timezone
 
         ignored = self.load_ignored_videos(channel_id)
+        current = ignored.get(video_id, {})
+        new_count = current.get("check_count", 0) + 1 if check_count == 1 else check_count
         ignored[video_id] = {
-            "title": title,
+            "title": title or current.get("title", ""),
             "reason": reason,
-            "error": error[:200] if error else "",
+            "error": error[:200] if error else current.get("error", ""),
+            "check_count": new_count,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self.save_ignored_videos(channel_id, ignored)
-        logger.info(f"[{channel_id}] Marked video [{video_id}] as ignored ({reason}).")
+        logger.info(f"[{channel_id}] Marked video [{video_id}] as {reason} (attempt #{new_count}).")
+
+    def unmark_video_ignored(self, channel_id: str, video_id: str) -> None:
+        """Remove a video from ignored list (e.g. when it transitioned from members-only to public)."""
+        ignored = self.load_ignored_videos(channel_id)
+        if video_id in ignored:
+            del ignored[video_id]
+            self.save_ignored_videos(channel_id, ignored)
+            logger.info(f"[{channel_id}] Unmarked video [{video_id}] from ignored list.")
 
     def load_history_ids(self, channel_id: str) -> set:
         """Load persistent history of all seen/processed video IDs for a channel from R2."""

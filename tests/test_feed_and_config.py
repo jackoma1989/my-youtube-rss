@@ -228,6 +228,24 @@ class TestPodcastSync(unittest.TestCase):
             self.assertIn("member_video_1", reloaded)
             self.assertEqual(reloaded["member_video_1"]["reason"], "members_only")
             self.assertEqual(reloaded["member_video_1"]["title"], "Member Only Episode")
+            self.assertEqual(reloaded["member_video_1"]["check_count"], 1)
+
+            # Mark again with incremented count
+            storage.mark_video_ignored(
+                channel_id="wangzhian",
+                video_id="member_video_1",
+                reason="members_only",
+                title="Member Only Episode",
+                error="Still members only",
+                check_count=2,
+            )
+            reloaded2 = storage.load_ignored_videos("wangzhian")
+            self.assertEqual(reloaded2["member_video_1"]["check_count"], 2)
+
+            # Unmark video (when transitioning to public)
+            storage.unmark_video_ignored("wangzhian", "member_video_1")
+            reloaded3 = storage.load_ignored_videos("wangzhian")
+            self.assertNotIn("member_video_1", reloaded3)
 
     def test_validate_podcast_rss(self):
         ep = PodcastEpisode(
