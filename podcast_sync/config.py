@@ -87,6 +87,12 @@ class Config:
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
+    # WeChat Notifications via Tencent iLink Bot (optional, dual protection with Telegram)
+    wechat_bot_token: Optional[str] = None
+    wechat_user_id: Optional[str] = None
+    wechat_context_token: Optional[str] = None
+    wechat_base_url: str = "https://ilinkai.weixin.qq.com"
+
     # Execution Options
     dry_run: bool = False
     output_dir: Path = field(default_factory=lambda: Path("./output"))
@@ -197,6 +203,36 @@ class Config:
         else:
             channels = json_channels
 
+        # WeChat credentials (from environment or local Hermes account auto-discovery)
+        wc_token = os.environ.get("WECHAT_BOT_TOKEN", "").strip() or os.environ.get("ILINK_BOT_TOKEN", "").strip() or None
+        wc_user = os.environ.get("WECHAT_USER_ID", "").strip() or None
+        wc_ctx = os.environ.get("WECHAT_CONTEXT_TOKEN", "").strip() or None
+        wc_base = os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com").strip() or "https://ilinkai.weixin.qq.com"
+
+        if not wc_token or not wc_user:
+            try:
+                hermes_home = os.environ.get("HERMES_HOME", os.path.expandvars(r"%LOCALAPPDATA%\hermes"))
+                acc_dir = Path(hermes_home) / "weixin" / "accounts"
+                if acc_dir.is_dir():
+                    import glob
+                    acc_files = glob.glob(str(acc_dir / "*@im.bot.json"))
+                    if acc_files:
+                        acc_files.sort(key=os.path.getmtime, reverse=True)
+                        target_acc = acc_files[0]
+                        with open(target_acc, "r", encoding="utf-8") as af:
+                            acc_data = json.load(af)
+                        wc_token = wc_token or acc_data.get("token")
+                        wc_user = wc_user or acc_data.get("user_id")
+                        wc_base = wc_base or acc_data.get("base_url", "https://ilinkai.weixin.qq.com")
+                        prefix = Path(target_acc).stem
+                        tokens_file = acc_dir / f"{prefix}.context-tokens.json"
+                        if not wc_ctx and tokens_file.exists():
+                            with open(tokens_file, "r", encoding="utf-8") as tf:
+                                tokens_data = json.load(tf)
+                                wc_ctx = tokens_data.get(wc_user, "")
+            except Exception:
+                pass
+
         return cls(
             channels=channels,
             r2_account_id=os.environ.get("R2_ACCOUNT_ID", "").strip(),
@@ -206,6 +242,10 @@ class Config:
             r2_public_url=public_url,
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None,
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None,
+            wechat_bot_token=wc_token,
+            wechat_user_id=wc_user,
+            wechat_context_token=wc_ctx,
+            wechat_base_url=wc_base,
             dry_run=get_bool("DRY_RUN", False),
             output_dir=Path(output_dir_str),
             youtube_cookies=os.environ.get("YOUTUBE_COOKIES", "").strip() or None,

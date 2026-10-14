@@ -353,21 +353,24 @@ def sync_single_bilibili_channel(
     feed_url = storage.upload_channel_feed(channel_id, rss_xml)
     logger.info(f"[{channel_name}] RSS Feed successfully published: {feed_url}")
 
-    # 11. Send Telegram Notification for new episodes that are actually retained in the feed
-    if not cfg.dry_run and cfg.telegram_bot_token and cfg.telegram_chat_id:
-        retained_ids = {ep.video_id for ep in retained}
-        valid_new_episodes = [ep for ep in newly_added_episodes if ep.video_id in retained_ids]
+    # 11. Send Dual Notification (WeChat / Telegram) for new episodes that are actually retained in the feed
+    retained_ids = {ep.video_id for ep in retained}
+    valid_new_episodes = [ep for ep in newly_added_episodes if ep.video_id in retained_ids]
+    has_notification = bool(
+        (cfg.telegram_bot_token and cfg.telegram_chat_id)
+        or (cfg.wechat_bot_token and cfg.wechat_user_id)
+    )
+    if not cfg.dry_run and has_notification:
         for ep in valid_new_episodes:
-            logger.info(f"Sending Telegram notification for [{ep.title}]...")
+            logger.info(f"Sending dual notification for [{ep.title}]...")
             send_bilibili_episode_notification(
-                bot_token=cfg.telegram_bot_token,
-                chat_id=cfg.telegram_chat_id,
                 creator_name=channel_name,
                 episode=ep,
                 feed_url=feed_url,
+                config=cfg,
             )
     elif cfg.dry_run:
-        logger.info(f"[DRY RUN] Would send {len(newly_added_episodes)} Telegram notification(s).")
+        logger.info(f"[DRY RUN] Would send {len(valid_new_episodes)} notification(s).")
 
     logger.info(f"=== Successfully completed sync for [{channel_name}] ===")
     return {

@@ -359,22 +359,25 @@ def sync_single_channel(
     # 9. Upload feed.xml
     feed_url = storage.upload_channel_feed(channel_id, rss_xml, is_primary=is_primary)
 
-    # 10. Send Telegram notifications for new episodes (if configured and retained in feed)
+    # 10. Send dual notifications (WeChat / Telegram) for new episodes (if configured and retained in feed)
     retained_ids = {ep.video_id for ep in retained_episodes}
     valid_new_episodes = [ep for ep in new_episodes if ep.video_id in retained_ids]
-    if valid_new_episodes and config.telegram_bot_token and config.telegram_chat_id:
-        logger.info(f"[{channel_id}] Sending Telegram notifications for {len(valid_new_episodes)} new episode(s)...")
+    has_notification = bool(
+        (config.telegram_bot_token and config.telegram_chat_id)
+        or (config.wechat_bot_token and config.wechat_user_id)
+    )
+    if valid_new_episodes and has_notification:
+        logger.info(f"[{channel_id}] Sending dual notifications (WeChat / Telegram) for {len(valid_new_episodes)} new episode(s)...")
         for new_ep in valid_new_episodes:
             try:
                 send_new_episode_notification(
-                    bot_token=config.telegram_bot_token,
-                    chat_id=config.telegram_chat_id,
                     channel_title=channel_info["title"],
                     episode=new_ep,
                     feed_url=feed_url,
+                    config=config,
                 )
             except Exception as e:
-                logger.warning(f"[{channel_id}] Failed to send Telegram notification for [{new_ep.video_id}]: {e}")
+                logger.warning(f"[{channel_id}] Failed to send notification for [{new_ep.video_id}]: {e}")
 
     logger.info(f"[{channel_id}] Sync finished. Feed URL: {feed_url}")
     return {

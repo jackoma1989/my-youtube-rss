@@ -624,6 +624,126 @@ class TestPodcastSync(unittest.TestCase):
             sync_single_channel(channel_cfg, cfg, storage, yt)
             self.assertEqual(yt.fetch_subtitles_for_video.call_count, 0)
 
+    def test_wechat_and_dual_notifications(self):
+        from unittest.mock import patch, MagicMock
+        from podcast_sync.notifier import (
+            send_wechat_message,
+            send_dual_episode_notification,
+            send_new_episode_notification,
+            send_douyin_episode_notification,
+            send_bilibili_episode_notification,
+        )
+
+        ep = PodcastEpisode(
+            video_id="test_ep_dual",
+            title="Dual Notification Episode",
+            description="Sample description",
+            pub_date=datetime(2026, 10, 14, 12, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=600,
+            audio_filename="audio/test/test_ep_dual.m4a",
+            audio_url="https://podcast.example.com/audio/test/test_ep_dual.m4a",
+            file_size_bytes=10240,
+            thumbnail_url="",
+            webpage_url="https://www.youtube.com/watch?v=test_ep_dual",
+        )
+
+        # 1. Test send_wechat_message without credentials returns None
+        self.assertIsNone(send_wechat_message("", "", "test"))
+
+        # 2. Test send_wechat_message successful mock
+        fake_wechat_resp = MagicMock()
+        fake_wechat_resp.read.return_value = json.dumps({"ret": 0, "message_id": "wx_msg_123"}).encode("utf-8")
+        fake_wechat_resp.__enter__.return_value = fake_wechat_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_wechat_resp) as mock_wx:
+            res_wx = send_wechat_message(
+                bot_token="test_wx_token",
+                user_id="test_user@im.wechat",
+                text="新单集更新！",
+                title="测试标题",
+                context_token="test_ctx",
+            )
+            self.assertIsNotNone(res_wx)
+            self.assertEqual(res_wx.get("message_id"), "wx_msg_123")
+            # Verify headers and payload
+            req = mock_wx.call_args[0][0]
+            self.assertEqual(req.headers.get("Authorizationtype"), "ilink_bot_token")
+            self.assertEqual(req.headers.get("Authorization"), "Bearer test_wx_token")
+            payload = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(payload["msg"]["to_user_id"], "test_user@im.wechat")
+            self.assertEqual(payload["msg"]["context_token"], "test_ctx")
+
+        # 3. Test dual notification: both Telegram and WeChat triggered in parallel
+        fake_tg_resp = MagicMock()
+        fake_tg_resp.read.return_value = json.dumps({"ok": True, "result": {"message_id": 888}}).encode("utf-8")
+        fake_tg_resp.__enter__.return_value = fake_tg_resp
+
+        def fake_urlopen_dispatcher(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+            if "telegram.org" in url:
+                return fake_tg_resp
+            else:
+                return fake_wechat_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen_dispatcher) as mock_dual:
+            dual_res = send_dual_episode_notification(
+                platform="youtube",
+                creator_name="测试频道",
+                episode=ep,
+                feed_url="https://podcast.example.com/feed.xml",
+                telegram_bot_token="tg_tok",
+                telegram_chat_id="tg_chat",
+                wechat_bot_token="wx_tok",
+                wechat_user_id="wx_user@im.wechat",
+            )
+            self.assertIsNotNone(dual_res["telegram"])
+            self.assertIsNotNone(dual_res["wechat"])
+            self.assertEqual(mock_dual.call_count, 2)
+
+        # 4. Test fault tolerance: Telegram fails but WeChat still delivers successfully
+        def tg_fails_wx_succeeds(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+            if "telegram.org" in url:
+                raise Exception("Telegram Connection Timeout")
+            return fake_wechat_resp
+
+        with patch("urllib.request.urlopen", side_effect=tg_fails_wx_succeeds):
+            fault_res = send_dual_episode_notification(
+                platform="bilibili",
+                creator_name="影视飓风",
+                episode=ep,
+                feed_url="https://podcast.example.com/tim.xml",
+                telegram_bot_token="tg_tok",
+                telegram_chat_id="tg_chat",
+                wechat_bot_token="wx_tok",
+                wechat_user_id="wx_user@im.wechat",
+            )
+            self.assertIsNone(fault_res["telegram"])
+            self.assertIsNotNone(fault_res["wechat"])
+
+        # 5. Test Config integration via send_new_episode_notification wrapper
+        test_cfg = Config(
+            dry_run=True,
+            telegram_bot_token="cfg_tg_token",
+            telegram_chat_id="cfg_tg_chat",
+            wechat_bot_token="cfg_wx_token",
+            wechat_user_id="cfg_wx_user",
+        )
+        with patch("podcast_sync.notifier.send_dual_episode_notification") as mock_disp:
+            mock_disp.return_value = {"telegram": {"ok": True}, "wechat": {"ret": 0}}
+            res_wrap = send_new_episode_notification(
+                channel_title="YouTube Channel",
+                episode=ep,
+                feed_url="https://podcast.example.com/yt.xml",
+                config=test_cfg,
+            )
+            self.assertIsNotNone(res_wrap)
+            mock_disp.assert_called_once()
+            call_kw = mock_disp.call_args[1]
+            self.assertEqual(call_kw["telegram_bot_token"], "cfg_tg_token")
+            self.assertEqual(call_kw["wechat_bot_token"], "cfg_wx_token")
+            self.assertEqual(call_kw["wechat_user_id"], "cfg_wx_user")
+
 
 if __name__ == "__main__":
     unittest.main()

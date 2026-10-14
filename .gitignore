@@ -17,6 +17,8 @@ output/
 
 # Environment & Credentials
 .env
+*.secrets*
+github_secrets_to_add.txt
 cookies.txt
 
 # OS / Editor

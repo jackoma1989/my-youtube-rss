@@ -26,7 +26,7 @@
 │ ├─► 上传至 Cloudflare R2 (支持 HTTP Range 206 断点续传与拖拽)                   │
 │ ├─► 自动根据 max_episodes 清理超出限额的旧期数音频 (控制在 10GB 免费内)          │
 │ ├─► 生成独立频道 RSS 源 (如 tim_hurricane.xml, geekerwan.xml, wangzhian.xml)   │
-│ └─► (可选) Telegram 机器人实时向手机推送新剧集通知                              │
+│ └─► (可选) 微信 (iLink Bot) + Telegram 双保险通道实时向手机推送新剧集通知         │
 └───────────────────────────────────────┬────────────────────────────────────────┘
                                         │
                                         ▼
@@ -53,6 +53,9 @@
 7. **智能容错与自愈**：
    * 自动清理 R2 存储桶中因网络中断残留的“未完成分片（Ongoing Multipart Upload）”。
    * 剧集清单与链接自愈校准，防止域名或频道名变更引起校验失败。
+8. **微信 + Telegram 双保险实时通知**：
+   * 支持通过腾讯 iLink 官方 Bot 协议直接将更新推送到个人手机微信（零外部 pip 依赖）。
+   * 微信与 Telegram 并行下发通知卡片，单侧网络波动或超时完全隔离，确保新单集通知双重保障、零遗漏。
 
 ---
 
@@ -174,6 +177,13 @@
 | `TAILSCALE_EXIT_NODE` | B站 / 抖音 | （可选）Tailscale 出口节点 IP/主机名（默认为家里 NAS） | `100.107.43.2` |
 | `TELEGRAM_BOT_TOKEN` | 通用 | （可选）Telegram Bot Token，新单集自动推送手机 | `8955999825:AAFR...` |
 | `TELEGRAM_CHAT_ID` | 通用 | （可选）Telegram 接收人 Chat ID | `5584552077` |
+| `WECHAT_BOT_TOKEN` | 通用 | （可选）腾讯 iLink Bot 鉴权 Token，微信推送必备 | `ilink_bot_token_xxxx...` |
+| `WECHAT_USER_ID` | 通用 | （可选）接收通知的微信用户 ID（`o9cq80x1...@im.wechat`） | `o9cq80x1...@im.wechat` |
+| `WECHAT_CONTEXT_TOKEN` | 通用 | （可选）活跃会话上下文令牌 | `ctx_token_xxxx...` |
+| `WECHAT_BASE_URL` | 通用 | （可选）官方网关地址，默认 `https://ilinkai.weixin.qq.com` | `https://ilinkai.weixin.qq.com` |
+
+> 💡 **通知双保险机制**：  
+> 当同时配置了 `TELEGRAM_*` 和 `WECHAT_*` 时，系统会自动启动**双保险模式**（两端同时并行下发通知卡片）。若其中一端由于网络波动超时或拦截，另一端仍能正常送达，互不影响；若仅配置了其中任意一种，系统也会优雅降级为单渠道推送。
 
 ---
 

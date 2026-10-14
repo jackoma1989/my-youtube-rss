@@ -173,6 +173,10 @@ jobs:
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WECHAT_BOT_TOKEN: ${{ secrets.WECHAT_BOT_TOKEN }}
+          WECHAT_USER_ID: ${{ secrets.WECHAT_USER_ID }}
+          WECHAT_CONTEXT_TOKEN: ${{ secrets.WECHAT_CONTEXT_TOKEN }}
+          WECHAT_BASE_URL: ${{ vars.WECHAT_BASE_URL || secrets.WECHAT_BASE_URL || 'https://ilinkai.weixin.qq.com' }}
         run: |
           if [ -z "$CHINA_PROXY" ] && [ -n "$TAILSCALE_AUTH_KEY" ]; then
             echo "Auto-detected TAILSCALE_AUTH_KEY. Setting CHINA_PROXY to http://127.0.0.1:1055"
