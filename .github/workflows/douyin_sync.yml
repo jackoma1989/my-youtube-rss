@@ -154,12 +154,6 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          WECHAT_BOT_TOKEN: ${{ secrets.WECHAT_BOT_TOKEN }}
-          WECHAT_USER_ID: ${{ secrets.WECHAT_USER_ID }}
-          WECHAT_CONTEXT_TOKEN: ${{ secrets.WECHAT_CONTEXT_TOKEN }}
-          WECHAT_BASE_URL: ${{ vars.WECHAT_BASE_URL || secrets.WECHAT_BASE_URL || 'https://ilinkai.weixin.qq.com' }}
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}

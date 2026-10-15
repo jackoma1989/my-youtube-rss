@@ -175,20 +175,18 @@
 | `DOUYIN_COOKIE` | 抖音 | 抖音网页端 Cookie（用于请求博主帖子列表接口） | `passport_csrf_token=...; sessionid=...;` |
 | `TAILSCALE_AUTH_KEY` | B站 / 抖音 | Tailscale 预授权密钥（格式：`tskey-auth-...`），用于访问国内出口节点 | `tskey-auth-kXXXXXX-XXXXXXXX` |
 | `TAILSCALE_EXIT_NODE` | B站 / 抖音 | （可选）Tailscale 出口节点 IP/主机名（默认为家里 NAS） | `100.107.43.2` |
-| `TELEGRAM_BOT_TOKEN` | 通用 | （可选）Telegram Bot Token，新单集自动推送手机 | `8955999825:AAFR...` |
-| `TELEGRAM_CHAT_ID` | 通用 | （可选）Telegram 接收人 Chat ID | `5584552077` |
-| `WECHAT_BOT_TOKEN` | 通用 | （可选）腾讯 iLink Bot 鉴权 Token，微信推送必备 | `ilink_bot_token_xxxx...` |
-| `WECHAT_USER_ID` | 通用 | （可选）接收通知的微信用户 ID（`o9cq80x1...@im.wechat`） | `o9cq80x1...@im.wechat` |
-| `WECHAT_CONTEXT_TOKEN` | 通用 | （可选）活跃会话上下文令牌 | `ctx_token_xxxx...` |
-| `WECHAT_BASE_URL` | 通用 | （可选）官方网关地址，默认 `https://ilinkai.weixin.qq.com` | `https://ilinkai.weixin.qq.com` |
-| `FEISHU_APP_ID` | 通用 | （可选）飞书自建应用 App ID，开启飞书交互卡片通知 | `cli_a928d64c0b215bc8` |
-| `FEISHU_APP_SECRET` | 通用 | （可选）飞书自建应用 App Secret | `3LjCfeP1WEAGD4Xd8ld07fDb...` |
-| `FEISHU_RECEIVE_ID` | 通用 | （可选）飞书接收消息的群聊 ID (`oc_...`) 或用户 ID (`ou_...`) | `oc_ed8e3ca546c71c1b91d445a7b68a472d` |
+| `FEISHU_APP_ID` | 通用 | （推荐）飞书自建应用 App ID，开启飞书交互卡片通知 | `cli_a928d64c0b215bc8` |
+| `FEISHU_APP_SECRET` | 通用 | （推荐）飞书自建应用 App Secret | `3LjCfeP1WEAGD4Xd8ld07fDb...` |
+| `FEISHU_RECEIVE_ID` | 通用 | （推荐）飞书接收消息的群聊 ID (`oc_...`) 或用户 ID (`ou_...`) | `oc_ed8e3ca546c71c1b91d445a7b68a472d` |
 | `FEISHU_WEBHOOK_URL` | 通用 | （可选）飞书群自定义机器人 Webhook 地址（与 App ID 二选一） | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
+| `TELEGRAM_BOT_TOKEN` | 通用 | （可选备用）Telegram Bot Token（已从工作流关闭） | `8955999825:AAFR...` |
+| `TELEGRAM_CHAT_ID` | 通用 | （可选备用）Telegram 接收人 Chat ID | `5584552077` |
+| `WECHAT_BOT_TOKEN` | 通用 | （可选备用）微信 iLink Bot 鉴权 Token（已从工作流关闭） | `ilink_bot_token_xxxx...` |
+| `WECHAT_USER_ID` | 通用 | （可选备用）接收通知的微信用户 ID | `o9cq80x1...@im.wechat` |
 
-> 💡 **通知多渠道保险机制**：  
-> 系统支持 **Telegram + 微信 (Tencent iLink Bot) + 飞书 (Feishu Interactive Card)** 三通道并行派发。  
-> 任意通道之间完全解耦与故障隔离，单通道网络超时或阻断不会影响其他渠道送达，亦不阻断核心播客同步。你可以任意组合配置 1 个、2 个或全部 3 个通知渠道！
+> 💡 **通知渠道机制**：  
+> 当前云端工作流已切换为**纯飞书通知模式**（Feishu Interactive Card），新单集生成后将以高清 Markdown 卡片形式实时推送至指定的飞书群聊。  
+> 底层代码依然保持多通道解耦架构，若未来需要重新启用微信或 Telegram，只需在工作流中恢复对应环境变量即可，零代码侵入。
 
 ---
 
