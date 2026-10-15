@@ -1,0 +1,109 @@
+name: Benchmark Douyin Video and Audio Extraction
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_url:
+        description: 'Douyin Channel URL or sec_uid (optional, defaults to Secrets.DOUYIN_CHANNEL_URL)'
+        required: false
+        default: ''
+      test_count:
+        description: 'Number of recent videos to benchmark (default 3)'
+        required: false
+        default: '3'
+
+concurrency:
+  group: bench-douyin-video
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Run Video Download & ffmpeg Benchmark
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install curl_cffi boto3
+          if [ -f scratch_repo/requirements.txt ]; then
+            pip install -r scratch_repo/requirements.txt
+          fi
+
+      - name: Check ffmpeg availability
+        run: |
+          ffmpeg -version | head -n 2
+
+      - name: Start Tailscale Exit-Node Proxy (TailSocks)
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          if [ -z "$TAILSCALE_AUTH_KEY" ]; then
+            echo "No TAILSCALE_AUTH_KEY set, skipping TailSocks proxy."
+            exit 0
+          fi
+
+          CLEAN_KEY=$(echo -n "${{ secrets.TAILSCALE_AUTH_KEY }}" | tr -d '[:space:]')
+          KEY_LEN=${#CLEAN_KEY}
+          KEY_PREFIX="${CLEAN_KEY:0:11}"
+          echo "Tailscale Auth Key length: $KEY_LEN characters"
+
+          if [[ "$KEY_PREFIX" != "tskey-auth-" ]]; then
+            echo "::error::TAILSCALE_AUTH_KEY does not start with 'tskey-auth-'!"
+            exit 1
+          fi
+
+          echo "Starting TailSocks proxy via NAS exit node..."
+          docker run -d \
+            --name tailsocks \
+            --entrypoint /bin/tailsocks \
+            -p 127.0.0.1:1055:1055 \
+            -e TS_AUTHKEY="$CLEAN_KEY" \
+            ghcr.io/italypaleale/tailsocks:1 \
+            --http-addr 0.0.0.0:1055 \
+            --authkey "$CLEAN_KEY" \
+            --exit-node "${{ secrets.TAILSCALE_EXIT_NODE || '100.107.43.2' }}"
+
+          echo "Waiting for TailSocks proxy to connect..."
+          READY=0
+          for i in {1..20}; do
+            if curl -s -m 4 --proxy http://127.0.0.1:1055 https://www.douyin.com > /dev/null 2>&1; then
+              echo "TailSocks proxy is connected and ready!"
+              READY=1
+              break
+            fi
+            echo "Waiting for TailSocks proxy... ($i/20)"
+            sleep 2
+          done
+          if [ $READY -eq 0 ]; then
+            echo "::error::TailSocks connectivity check timed out. Showing docker logs:"
+            docker logs tailsocks || true
+            exit 1
+          fi
+
+      - name: Run Video Download & Audio Extraction Benchmark
+        env:
+          DOUYIN_COOKIE: ${{ secrets.DOUYIN_COOKIE }}
+          CHINA_PROXY: ${{ secrets.CHINA_PROXY }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          DOUYIN_CHANNEL_URL: ${{ inputs.channel_url || secrets.DOUYIN_CHANNEL_URL || secrets.DOUYIN_CHANNEL_URL_1 }}
+          DOUYIN_CHANNEL_URL_1: ${{ secrets.DOUYIN_CHANNEL_URL_1 }}
+        run: |
+          if [ -z "$CHINA_PROXY" ] && [ -n "$TAILSCALE_AUTH_KEY" ]; then
+            echo "Auto-detected TAILSCALE_AUTH_KEY. Setting CHINA_PROXY to http://127.0.0.1:1055"
+            export CHINA_PROXY="http://127.0.0.1:1055"
+          fi
+
+          python scripts/bench_douyin_video.py \
+            --channel-url "${{ inputs.channel_url || env.DOUYIN_CHANNEL_URL }}" \
+            --count "${{ inputs.test_count || 3 }}"
