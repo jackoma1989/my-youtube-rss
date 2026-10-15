@@ -730,7 +730,7 @@ class TestPodcastSync(unittest.TestCase):
             wechat_user_id="cfg_wx_user",
         )
         with patch("podcast_sync.notifier.send_dual_episode_notification") as mock_disp:
-            mock_disp.return_value = {"telegram": {"ok": True}, "wechat": {"ret": 0}}
+            mock_disp.return_value = {"telegram": {"ok": True}, "wechat": {"ret": 0}, "feishu": None}
             res_wrap = send_new_episode_notification(
                 channel_title="YouTube Channel",
                 episode=ep,
@@ -743,6 +743,141 @@ class TestPodcastSync(unittest.TestCase):
             self.assertEqual(call_kw["telegram_bot_token"], "cfg_tg_token")
             self.assertEqual(call_kw["wechat_bot_token"], "cfg_wx_token")
             self.assertEqual(call_kw["wechat_user_id"], "cfg_wx_user")
+
+    def test_feishu_and_triple_channel_notifications(self):
+        from unittest.mock import patch, MagicMock
+        from podcast_sync.notifier import (
+            get_feishu_tenant_access_token,
+            send_feishu_message,
+            send_dual_episode_notification,
+            send_new_episode_notification,
+        )
+
+        ep = PodcastEpisode(
+            video_id="test_ep_feishu",
+            title="Feishu Notification Episode",
+            description="Testing Feishu card message",
+            pub_date=datetime(2026, 10, 15, 10, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=360,
+            audio_filename="audio/test/test_ep_feishu.m4a",
+            audio_url="https://podcast.example.com/audio/test/test_ep_feishu.m4a",
+            file_size_bytes=8192,
+            thumbnail_url="",
+            webpage_url="https://www.youtube.com/watch?v=test_ep_feishu",
+        )
+
+        # 1. Missing credentials returns None
+        self.assertIsNone(get_feishu_tenant_access_token("", ""))
+        self.assertIsNone(send_feishu_message(app_id="app", app_secret="sec", receive_id=""))
+
+        # 2. Test get_feishu_tenant_access_token
+        fake_token_resp = MagicMock()
+        fake_token_resp.read.return_value = json.dumps({"code": 0, "tenant_access_token": "t-dummy-token"}).encode("utf-8")
+        fake_token_resp.__enter__.return_value = fake_token_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_token_resp):
+            tok = get_feishu_tenant_access_token("cli_test", "sec_test")
+            self.assertEqual(tok, "t-dummy-token")
+
+        # 3. Test send_feishu_message via OpenAPI with interactive card
+        fake_msg_resp = MagicMock()
+        fake_msg_resp.read.return_value = json.dumps({"code": 0, "msg": "ok", "data": {"message_id": "om_123"}}).encode("utf-8")
+        fake_msg_resp.__enter__.return_value = fake_msg_resp
+
+        def urlopen_feishu(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+            if "tenant_access_token" in url:
+                return fake_token_resp
+            return fake_msg_resp
+
+        with patch("urllib.request.urlopen", side_effect=urlopen_feishu) as mock_fs:
+            res_fs = send_feishu_message(
+                app_id="cli_test",
+                app_secret="sec_test",
+                receive_id="oc_ed8e3ca546c71c1b91d445a7b68a472d",
+                text="播客新单集已同步！",
+                title="📻 新单集上线",
+            )
+            self.assertIsNotNone(res_fs)
+            self.assertEqual(res_fs.get("code"), 0)
+            self.assertEqual(mock_fs.call_count, 2)
+            # Verify message request
+            msg_req = mock_fs.call_args_list[1][0][0]
+            self.assertIn("receive_id_type=chat_id", msg_req.full_url if hasattr(msg_req, "full_url") else msg_req.get_full_url())
+            payload = json.loads(msg_req.data.decode("utf-8"))
+            self.assertEqual(payload["msg_type"], "interactive")
+            self.assertEqual(payload["receive_id"], "oc_ed8e3ca546c71c1b91d445a7b68a472d")
+
+        # 4. Test Webhook mode
+        fake_webhook_resp = MagicMock()
+        fake_webhook_resp.read.return_value = json.dumps({"StatusCode": 0, "msg": "success"}).encode("utf-8")
+        fake_webhook_resp.__enter__.return_value = fake_webhook_resp
+
+        with patch("urllib.request.urlopen", return_value=fake_webhook_resp):
+            res_wh = send_feishu_message(
+                webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/fake",
+                text="Webhook test",
+            )
+            self.assertIsNotNone(res_wh)
+
+        # 5. Test Triple-channel dispatch: Telegram + WeChat + Feishu
+        def triple_dispatcher(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+            if "telegram.org" in url:
+                tg_mock = MagicMock()
+                tg_mock.read.return_value = json.dumps({"ok": True}).encode("utf-8")
+                tg_mock.__enter__.return_value = tg_mock
+                return tg_mock
+            elif "ilinkai.weixin.qq.com" in url:
+                wx_mock = MagicMock()
+                wx_mock.read.return_value = json.dumps({"ret": 0, "message_id": "wx_999"}).encode("utf-8")
+                wx_mock.__enter__.return_value = wx_mock
+                return wx_mock
+            elif "tenant_access_token" in url:
+                return fake_token_resp
+            else:
+                return fake_msg_resp
+
+        with patch("urllib.request.urlopen", side_effect=triple_dispatcher) as mock_triple:
+            triple_res = send_dual_episode_notification(
+                platform="youtube",
+                creator_name="测试频道",
+                episode=ep,
+                feed_url="https://podcast.example.com/feed.xml",
+                telegram_bot_token="tg_tok",
+                telegram_chat_id="tg_chat",
+                wechat_bot_token="wx_tok",
+                wechat_user_id="wx_user@im.wechat",
+                feishu_app_id="cli_test",
+                feishu_app_secret="sec_test",
+                feishu_receive_id="oc_test_chat",
+            )
+            self.assertIsNotNone(triple_res["telegram"])
+            self.assertIsNotNone(triple_res["wechat"])
+            self.assertIsNotNone(triple_res["feishu"])
+            self.assertEqual(mock_triple.call_count, 4)  # 1 tg + 1 wx + 1 fs token + 1 fs msg
+
+        # 6. Test Config auto-resolution with Feishu
+        test_cfg = Config(
+            dry_run=True,
+            feishu_app_id="cli_cfg",
+            feishu_app_secret="sec_cfg",
+            feishu_receive_id="oc_cfg",
+        )
+        with patch("podcast_sync.notifier.send_dual_episode_notification") as mock_disp:
+            mock_disp.return_value = {"telegram": None, "wechat": None, "feishu": {"code": 0}}
+            res_wrap = send_new_episode_notification(
+                channel_title="YouTube Channel",
+                episode=ep,
+                feed_url="https://podcast.example.com/yt.xml",
+                config=test_cfg,
+            )
+            self.assertIsNotNone(res_wrap)
+            mock_disp.assert_called_once()
+            call_kw = mock_disp.call_args[1]
+            self.assertEqual(call_kw["feishu_app_id"], "cli_cfg")
+            self.assertEqual(call_kw["feishu_app_secret"], "sec_cfg")
+            self.assertEqual(call_kw["feishu_receive_id"], "oc_cfg")
 
 
 if __name__ == "__main__":

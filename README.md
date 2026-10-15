@@ -181,9 +181,14 @@
 | `WECHAT_USER_ID` | 通用 | （可选）接收通知的微信用户 ID（`o9cq80x1...@im.wechat`） | `o9cq80x1...@im.wechat` |
 | `WECHAT_CONTEXT_TOKEN` | 通用 | （可选）活跃会话上下文令牌 | `ctx_token_xxxx...` |
 | `WECHAT_BASE_URL` | 通用 | （可选）官方网关地址，默认 `https://ilinkai.weixin.qq.com` | `https://ilinkai.weixin.qq.com` |
+| `FEISHU_APP_ID` | 通用 | （可选）飞书自建应用 App ID，开启飞书交互卡片通知 | `cli_a928d64c0b215bc8` |
+| `FEISHU_APP_SECRET` | 通用 | （可选）飞书自建应用 App Secret | `3LjCfeP1WEAGD4Xd8ld07fDb...` |
+| `FEISHU_RECEIVE_ID` | 通用 | （可选）飞书接收消息的群聊 ID (`oc_...`) 或用户 ID (`ou_...`) | `oc_ed8e3ca546c71c1b91d445a7b68a472d` |
+| `FEISHU_WEBHOOK_URL` | 通用 | （可选）飞书群自定义机器人 Webhook 地址（与 App ID 二选一） | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 
-> 💡 **通知双保险机制**：  
-> 当同时配置了 `TELEGRAM_*` 和 `WECHAT_*` 时，系统会自动启动**双保险模式**（两端同时并行下发通知卡片）。若其中一端由于网络波动超时或拦截，另一端仍能正常送达，互不影响；若仅配置了其中任意一种，系统也会优雅降级为单渠道推送。
+> 💡 **通知多渠道保险机制**：  
+> 系统支持 **Telegram + 微信 (Tencent iLink Bot) + 飞书 (Feishu Interactive Card)** 三通道并行派发。  
+> 任意通道之间完全解耦与故障隔离，单通道网络超时或阻断不会影响其他渠道送达，亦不阻断核心播客同步。你可以任意组合配置 1 个、2 个或全部 3 个通知渠道！
 
 ---
 

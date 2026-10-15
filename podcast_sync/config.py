@@ -93,6 +93,13 @@ class Config:
     wechat_context_token: Optional[str] = None
     wechat_base_url: str = "https://ilinkai.weixin.qq.com"
 
+    # Feishu Notifications via Lark / Feishu Open API or Webhook (optional)
+    feishu_app_id: Optional[str] = None
+    feishu_app_secret: Optional[str] = None
+    feishu_receive_id: Optional[str] = None
+    feishu_receive_id_type: Optional[str] = None
+    feishu_webhook_url: Optional[str] = None
+
     # Execution Options
     dry_run: bool = False
     output_dir: Path = field(default_factory=lambda: Path("./output"))
@@ -233,6 +240,49 @@ class Config:
             except Exception:
                 pass
 
+        # Feishu credentials (from environment or local Hermes auto-discovery)
+        fs_app_id = os.environ.get("FEISHU_APP_ID", "").strip() or None
+        fs_app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip() or None
+        fs_recv_id = (
+            os.environ.get("FEISHU_RECEIVE_ID", "").strip()
+            or os.environ.get("FEISHU_HOME_CHANNEL", "").strip()
+            or None
+        )
+        fs_recv_type = os.environ.get("FEISHU_RECEIVE_ID_TYPE", "").strip() or None
+        fs_webhook = os.environ.get("FEISHU_WEBHOOK_URL", "").strip() or None
+
+        if not fs_app_id or not fs_app_secret or not fs_recv_id:
+            try:
+                hermes_home = os.environ.get("HERMES_HOME", os.path.expandvars(r"%LOCALAPPDATA%\hermes"))
+                hermes_env_file = Path(hermes_home) / ".env"
+                if hermes_env_file.is_file():
+                    with open(hermes_env_file, "r", encoding="utf-8") as hef:
+                        for line in hef:
+                            line = line.strip()
+                            if not line or line.startswith("#") or "=" not in line:
+                                continue
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k == "FEISHU_APP_ID" and not fs_app_id:
+                                fs_app_id = v
+                            elif k == "FEISHU_APP_SECRET" and not fs_app_secret:
+                                fs_app_secret = v
+                            elif (k in ("FEISHU_HOME_CHANNEL", "FEISHU_RECEIVE_ID")) and not fs_recv_id:
+                                fs_recv_id = v
+                
+                # Also check channel_directory.json if receive_id still missing
+                if not fs_recv_id:
+                    chan_dir_file = Path(hermes_home) / "channel_directory.json"
+                    if chan_dir_file.is_file():
+                        with open(chan_dir_file, "r", encoding="utf-8") as cdf:
+                            cdata = json.load(cdf)
+                            feishu_channels = cdata.get("platforms", {}).get("feishu", [])
+                            if feishu_channels and isinstance(feishu_channels, list):
+                                fs_recv_id = feishu_channels[0].get("id")
+            except Exception:
+                pass
+
         return cls(
             channels=channels,
             r2_account_id=os.environ.get("R2_ACCOUNT_ID", "").strip(),
@@ -246,6 +296,11 @@ class Config:
             wechat_user_id=wc_user,
             wechat_context_token=wc_ctx,
             wechat_base_url=wc_base,
+            feishu_app_id=fs_app_id,
+            feishu_app_secret=fs_app_secret,
+            feishu_receive_id=fs_recv_id,
+            feishu_receive_id_type=fs_recv_type,
+            feishu_webhook_url=fs_webhook,
             dry_run=get_bool("DRY_RUN", False),
             output_dir=Path(output_dir_str),
             youtube_cookies=os.environ.get("YOUTUBE_COOKIES", "").strip() or None,

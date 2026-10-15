@@ -96,5 +96,10 @@ jobs:
           WECHAT_USER_ID: ${{ secrets.WECHAT_USER_ID }}
           WECHAT_CONTEXT_TOKEN: ${{ secrets.WECHAT_CONTEXT_TOKEN }}
           WECHAT_BASE_URL: ${{ vars.WECHAT_BASE_URL || secrets.WECHAT_BASE_URL || 'https://ilinkai.weixin.qq.com' }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
+          FEISHU_RECEIVE_ID_TYPE: ${{ secrets.FEISHU_RECEIVE_ID_TYPE || vars.FEISHU_RECEIVE_ID_TYPE || '' }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
         run: |
           python -m podcast_sync.main

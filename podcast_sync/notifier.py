@@ -148,6 +148,172 @@ def send_wechat_message(
         return None
 
 
+def get_feishu_tenant_access_token(
+    app_id: str,
+    app_secret: str,
+    timeout: int = 10,
+) -> Optional[str]:
+    """
+    Obtain internal tenant_access_token for Feishu Bot API.
+    Zero third-party dependencies (pure standard urllib).
+    """
+    if not app_id or not app_secret:
+        return None
+
+    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    payload = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("code") == 0:
+                token = data.get("tenant_access_token")
+                return token
+            else:
+                logger.error(f"Failed to get Feishu tenant_access_token: {data.get('msg')} (code: {data.get('code')})")
+                return None
+    except Exception as e:
+        logger.error(f"Error fetching Feishu tenant_access_token: {e}")
+        return None
+
+
+def send_feishu_message(
+    app_id: Optional[str] = None,
+    app_secret: Optional[str] = None,
+    receive_id: Optional[str] = None,
+    receive_id_type: Optional[str] = None,
+    text: str = "",
+    title: Optional[str] = None,
+    webhook_url: Optional[str] = None,
+    timeout: int = 15,
+) -> Optional[dict]:
+    """
+    Send notification to Feishu via OpenAPI (Hermes Bot App) or Custom Bot Webhook.
+    Zero third-party dependencies.
+    """
+    # 1. Custom Bot Webhook mode
+    if webhook_url:
+        full_text = f"【{title}】\n\n{text}" if title else text
+        payload = {
+            "msg_type": "text",
+            "content": {"text": full_text},
+        }
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                if res.get("StatusCode") == 0 or res.get("code") == 0:
+                    logger.info("Feishu notification delivered successfully via Webhook.")
+                    return res
+                else:
+                    logger.error(f"Feishu webhook returned error: {res}")
+                    return None
+        except Exception as e:
+            logger.error(f"Failed to send Feishu webhook notification: {e}")
+            return None
+
+    # 2. Feishu OpenAPI App mode (Hermes Bot)
+    if not app_id or not app_secret or not receive_id:
+        logger.debug("Feishu app_id, app_secret or receive_id missing. Skipping Feishu notification.")
+        return None
+
+    token = get_feishu_tenant_access_token(app_id, app_secret, timeout=timeout)
+    if not token:
+        return None
+
+    # Auto detect receive_id_type if not specified
+    if not receive_id_type:
+        if receive_id.startswith("oc_"):
+            receive_id_type = "chat_id"
+        elif receive_id.startswith("ou_"):
+            receive_id_type = "open_id"
+        elif receive_id.startswith("on_"):
+            receive_id_type = "union_id"
+        else:
+            receive_id_type = "chat_id"
+
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+
+    # Attempt 1: Interactive Card message for best readability
+    card_title = title or "播客有新单集更新"
+    card_content = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": card_title},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": text},
+            }
+        ],
+    }
+
+    card_payload = {
+        "receive_id": receive_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card_content, ensure_ascii=False),
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(card_payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("code") == 0:
+                logger.info("Feishu notification delivered successfully via interactive card.")
+                return res
+            else:
+                logger.warning(f"Feishu interactive card failed ({res.get('msg')}), falling back to text message...")
+    except Exception as e:
+        logger.warning(f"Feishu interactive card attempt failed ({e}). Retrying with plain text message...")
+
+    # Attempt 2: Text message fallback
+    try:
+        plain_text = f"【{title}】\n\n{text}" if title else text
+        text_payload = {
+            "receive_id": receive_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": plain_text}, ensure_ascii=False),
+        }
+        req_text = urllib.request.Request(
+            url,
+            data=json.dumps(text_payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req_text, timeout=timeout) as resp_text:
+            res_text = json.loads(resp_text.read().decode("utf-8"))
+            if res_text.get("code") == 0:
+                logger.info("Feishu notification delivered successfully via text fallback.")
+                return res_text
+            else:
+                logger.error(f"Feishu text message failed completely: {res_text}")
+                return None
+    except Exception as e2:
+        logger.error(f"Failed to deliver Feishu text message: {e2}")
+        return None
+
+
 def _format_episode_plain(
     platform_name: str,
     channel_label: str,
@@ -179,6 +345,37 @@ def _format_episode_plain(
     return "\n".join(lines)
 
 
+def _format_episode_feishu_markdown(
+    platform_name: str,
+    channel_label: str,
+    channel_title: str,
+    episode: PodcastEpisode,
+    feed_url: str = "",
+) -> str:
+    """Format structured Markdown for Feishu rich interactive card."""
+    duration_str = format_duration(episode.duration_seconds)
+    pub_str = (
+        episode.pub_date.strftime("%Y-%m-%d %H:%M:%S")
+        if episode.pub_date
+        else "刚刚"
+    )
+
+    lines = [
+        f"**{channel_label}**: {channel_title or '未知'}",
+        f"**🎬 单集**: {episode.title or '新单集'}",
+        f"**⏱️ 时长**: {duration_str}",
+        f"**📅 发布**: {pub_str}",
+    ]
+    if getattr(episode, "transcripts", None):
+        lines.append(f"**📝 字幕**: 已就绪 ({', '.join([t.language for t in episode.transcripts])})")
+    if feed_url:
+        lines.append(f"**📻 播客源**: `{feed_url}`")
+    if episode.webpage_url:
+        lines.append(f"**🔗 原视频**: [点击查看原视频]({episode.webpage_url})")
+
+    return "\n\n".join(lines)
+
+
 def send_dual_episode_notification(
     platform: str,
     creator_name: str,
@@ -192,13 +389,19 @@ def send_dual_episode_notification(
     wechat_user_id: Optional[str] = None,
     wechat_context_token: Optional[str] = None,
     wechat_base_url: str = "https://ilinkai.weixin.qq.com",
+    # Feishu config
+    feishu_app_id: Optional[str] = None,
+    feishu_app_secret: Optional[str] = None,
+    feishu_receive_id: Optional[str] = None,
+    feishu_receive_id_type: Optional[str] = None,
+    feishu_webhook_url: Optional[str] = None,
 ) -> dict:
     """
-    Dual-protection notification dispatcher.
-    Sends notifications to both WeChat and Telegram in parallel.
-    Failure on one platform does not impact the other.
+    Multi-channel notification dispatcher (Telegram + WeChat + Feishu).
+    Sends notifications in parallel with complete fault isolation.
+    Failure on one platform does not impact the others.
     """
-    results = {"telegram": None, "wechat": None}
+    results = {"telegram": None, "wechat": None, "feishu": None}
 
     # Normalize platform meta
     platform_lower = (platform or "youtube").lower()
@@ -286,6 +489,28 @@ def send_dual_episode_notification(
         except Exception as we:
             logger.error(f"WeChat notification execution error: {we}")
 
+    # 3. Feishu Notification (Lark Interactive Card or Webhook)
+    if (feishu_app_id and feishu_app_secret and feishu_receive_id) or feishu_webhook_url:
+        try:
+            feishu_body = _format_episode_feishu_markdown(
+                platform_name=title_banner,
+                channel_label=channel_label,
+                channel_title=name,
+                episode=episode,
+                feed_url=feed_url,
+            )
+            results["feishu"] = send_feishu_message(
+                app_id=feishu_app_id,
+                app_secret=feishu_app_secret,
+                receive_id=feishu_receive_id,
+                receive_id_type=feishu_receive_id_type,
+                text=feishu_body,
+                title=f"{icon} {title_banner}",
+                webhook_url=feishu_webhook_url,
+            )
+        except Exception as fe:
+            logger.error(f"Feishu notification execution error: {fe}")
+
     return results
 
 
@@ -299,7 +524,7 @@ def send_new_episode_notification(
     **kwargs,
 ) -> Optional[dict]:
     """
-    Build formatted notification card for a newly synced episode and send via Telegram and WeChat (dual protection).
+    Build formatted notification card for a newly synced episode and send via Telegram, WeChat, and Feishu.
     Maintains full backward compatibility with existing callers.
     """
     if episode is None:
@@ -320,8 +545,17 @@ def send_new_episode_notification(
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
 
-    # If neither Telegram nor WeChat is configured, return None immediately
-    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+    fs_app_id = kwargs.get("feishu_app_id") or getattr(config, "feishu_app_id", None) or os.environ.get("FEISHU_APP_ID")
+    fs_app_secret = kwargs.get("feishu_app_secret") or getattr(config, "feishu_app_secret", None) or os.environ.get("FEISHU_APP_SECRET")
+    fs_recv_id = kwargs.get("feishu_receive_id") or getattr(config, "feishu_receive_id", None) or os.environ.get("FEISHU_RECEIVE_ID") or os.environ.get("FEISHU_HOME_CHANNEL")
+    fs_recv_type = kwargs.get("feishu_receive_id_type") or getattr(config, "feishu_receive_id_type", None) or os.environ.get("FEISHU_RECEIVE_ID_TYPE")
+    fs_webhook = kwargs.get("feishu_webhook_url") or getattr(config, "feishu_webhook_url", None) or os.environ.get("FEISHU_WEBHOOK_URL")
+
+    # If neither Telegram, WeChat, nor Feishu is configured, return None immediately
+    has_tg = bool(tg_token and tg_chat)
+    has_wc = bool(wc_token and wc_user)
+    has_fs = bool(fs_webhook or (fs_app_id and fs_app_secret and fs_recv_id))
+    if not (has_tg or has_wc or has_fs):
         return None
 
     res = send_dual_episode_notification(
@@ -335,8 +569,13 @@ def send_new_episode_notification(
         wechat_user_id=wc_user,
         wechat_context_token=wc_ctx,
         wechat_base_url=wc_base,
+        feishu_app_id=fs_app_id,
+        feishu_app_secret=fs_app_secret,
+        feishu_receive_id=fs_recv_id,
+        feishu_receive_id_type=fs_recv_type,
+        feishu_webhook_url=fs_webhook,
     )
-    return res.get("telegram") or res.get("wechat")
+    return res.get("telegram") or res.get("wechat") or res.get("feishu")
 
 
 def send_douyin_episode_notification(
@@ -349,7 +588,7 @@ def send_douyin_episode_notification(
     **kwargs,
 ) -> Optional[dict]:
     """
-    Build formatted notification card for a newly synced Douyin episode and send via Telegram and WeChat.
+    Build formatted notification card for a newly synced Douyin episode and send via Telegram, WeChat, and Feishu.
     """
     if episode is None:
         return None
@@ -369,8 +608,17 @@ def send_douyin_episode_notification(
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
 
-    # If neither Telegram nor WeChat is configured, return None immediately
-    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+    fs_app_id = kwargs.get("feishu_app_id") or getattr(config, "feishu_app_id", None) or os.environ.get("FEISHU_APP_ID")
+    fs_app_secret = kwargs.get("feishu_app_secret") or getattr(config, "feishu_app_secret", None) or os.environ.get("FEISHU_APP_SECRET")
+    fs_recv_id = kwargs.get("feishu_receive_id") or getattr(config, "feishu_receive_id", None) or os.environ.get("FEISHU_RECEIVE_ID") or os.environ.get("FEISHU_HOME_CHANNEL")
+    fs_recv_type = kwargs.get("feishu_receive_id_type") or getattr(config, "feishu_receive_id_type", None) or os.environ.get("FEISHU_RECEIVE_ID_TYPE")
+    fs_webhook = kwargs.get("feishu_webhook_url") or getattr(config, "feishu_webhook_url", None) or os.environ.get("FEISHU_WEBHOOK_URL")
+
+    # If neither Telegram, WeChat, nor Feishu is configured, return None immediately
+    has_tg = bool(tg_token and tg_chat)
+    has_wc = bool(wc_token and wc_user)
+    has_fs = bool(fs_webhook or (fs_app_id and fs_app_secret and fs_recv_id))
+    if not (has_tg or has_wc or has_fs):
         return None
 
     res = send_dual_episode_notification(
@@ -384,8 +632,13 @@ def send_douyin_episode_notification(
         wechat_user_id=wc_user,
         wechat_context_token=wc_ctx,
         wechat_base_url=wc_base,
+        feishu_app_id=fs_app_id,
+        feishu_app_secret=fs_app_secret,
+        feishu_receive_id=fs_recv_id,
+        feishu_receive_id_type=fs_recv_type,
+        feishu_webhook_url=fs_webhook,
     )
-    return res.get("telegram") or res.get("wechat")
+    return res.get("telegram") or res.get("wechat") or res.get("feishu")
 
 
 def send_bilibili_episode_notification(
@@ -398,7 +651,7 @@ def send_bilibili_episode_notification(
     **kwargs,
 ) -> Optional[dict]:
     """
-    Build formatted notification card for a newly synced Bilibili episode and send via Telegram and WeChat.
+    Build formatted notification card for a newly synced Bilibili episode and send via Telegram, WeChat, and Feishu.
     """
     if episode is None:
         return None
@@ -418,8 +671,17 @@ def send_bilibili_episode_notification(
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
 
-    # If neither Telegram nor WeChat is configured, return None immediately
-    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+    fs_app_id = kwargs.get("feishu_app_id") or getattr(config, "feishu_app_id", None) or os.environ.get("FEISHU_APP_ID")
+    fs_app_secret = kwargs.get("feishu_app_secret") or getattr(config, "feishu_app_secret", None) or os.environ.get("FEISHU_APP_SECRET")
+    fs_recv_id = kwargs.get("feishu_receive_id") or getattr(config, "feishu_receive_id", None) or os.environ.get("FEISHU_RECEIVE_ID") or os.environ.get("FEISHU_HOME_CHANNEL")
+    fs_recv_type = kwargs.get("feishu_receive_id_type") or getattr(config, "feishu_receive_id_type", None) or os.environ.get("FEISHU_RECEIVE_ID_TYPE")
+    fs_webhook = kwargs.get("feishu_webhook_url") or getattr(config, "feishu_webhook_url", None) or os.environ.get("FEISHU_WEBHOOK_URL")
+
+    # If neither Telegram, WeChat, nor Feishu is configured, return None immediately
+    has_tg = bool(tg_token and tg_chat)
+    has_wc = bool(wc_token and wc_user)
+    has_fs = bool(fs_webhook or (fs_app_id and fs_app_secret and fs_recv_id))
+    if not (has_tg or has_wc or has_fs):
         return None
 
     res = send_dual_episode_notification(
@@ -433,5 +695,10 @@ def send_bilibili_episode_notification(
         wechat_user_id=wc_user,
         wechat_context_token=wc_ctx,
         wechat_base_url=wc_base,
+        feishu_app_id=fs_app_id,
+        feishu_app_secret=fs_app_secret,
+        feishu_receive_id=fs_recv_id,
+        feishu_receive_id_type=fs_recv_type,
+        feishu_webhook_url=fs_webhook,
     )
-    return res.get("telegram") or res.get("wechat")
+    return res.get("telegram") or res.get("wechat") or res.get("feishu")
