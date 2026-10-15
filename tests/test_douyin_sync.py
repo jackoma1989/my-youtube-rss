@@ -162,6 +162,93 @@ class TestDouyinSync(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["episodes_count"], 1)
 
+    def test_douyin_fetcher_video_download_and_extract_audio_pipeline(self):
+        fetcher = DouyinFetcher(cookie="dummy")
+        out_mp3 = self.temp_path / "fallback_test.mp3"
+
+        # Mock download_video to create a dummy mp4
+        def mock_download_video(url, target_path):
+            target_path.write_bytes(b"dummy mp4 video bytes" * 100)
+            return True
+
+        # Mock extract_audio_from_video to create a dummy mp3
+        def mock_extract(video_path, audio_path, quality="4"):
+            self.assertTrue(video_path.exists())
+            audio_path.write_bytes(b"dummy mp3 audio bytes" * 100)
+            return True
+
+        with patch.object(fetcher, "download_video", side_effect=mock_download_video) as m_dl, \
+             patch.object(fetcher, "extract_audio_from_video", side_effect=mock_extract) as m_ext:
+            ok = fetcher.download_video_and_extract_audio("https://cdn.example.com/video.mp4", out_mp3)
+            self.assertTrue(ok)
+            self.assertTrue(out_mp3.exists())
+            # Ensure temporary .temp.mp4 was automatically cleaned up
+            temp_mp4 = out_mp3.with_suffix(".temp.mp4")
+            self.assertFalse(temp_mp4.exists())
+            self.assertEqual(m_dl.call_count, 1)
+            self.assertEqual(m_ext.call_count, 1)
+
+    def test_douyin_sync_video_fallback_integration(self):
+        import asyncio
+        from run_douyin_sync import sync_channel
+        from podcast_sync.config import Config
+
+        cfg = Config(
+            channels=[],
+            r2_account_id="acc",
+            r2_access_key_id="key",
+            r2_secret_access_key="secret",
+            r2_bucket_name="bucket",
+            r2_public_url="https://podcast.example.com",
+            output_dir=self.temp_path / "sync_out",
+        )
+        storage = MagicMock()
+        storage.load_channel_manifest.return_value = []
+        storage.upload_audio.return_value = "https://podcast.example.com/audio/cuiyutao/769078.mp3"
+        storage.load_history_processed_ids.return_value = set()
+
+        fetcher = DouyinFetcher(cookie="dummy")
+        # Simulate video without audio_url (like Cuiyutao's patient videos)
+        posts_data = [
+            {
+                "video_id": "769078",
+                "title": "2岁宝宝每餐营养搭配为啥不长肉",
+                "description": "宝宝营养",
+                "pub_date": datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc),
+                "duration_seconds": 95,
+                "audio_url": "",  # Missing direct audio URL!
+                "video_url": "https://cdn.example.com/video/769078.mp4",
+                "cover_url": "https://cdn.example.com/cover.jpg",
+                "avatar_url": "",
+                "author_name": "崔玉涛",
+                "webpage_url": "https://www.douyin.com/video/769078",
+                "is_top": False,
+            }
+        ]
+
+        async def mock_fetch_posts(*args, **kwargs):
+            return posts_data
+
+        def mock_fallback_extract(url, target_path, quality="4"):
+            target_path.write_bytes(b"mock extracted mp3 audio bytes" * 100)
+            return True
+
+        with patch.object(fetcher, "fetch_creator_posts", side_effect=mock_fetch_posts), \
+             patch.object(fetcher, "download_video_and_extract_audio", side_effect=mock_fallback_extract) as m_extract:
+            channel_cfg = {
+                "id": "cuiyutao",
+                "name": "崔玉涛",
+                "sec_uid": "MS4wLjABAAAA...",
+                "max_episodes": 15,
+                "icloud_backup": False,
+            }
+            res = asyncio.run(sync_channel(channel_cfg, cfg, storage, self.db, fetcher))
+            self.assertTrue(res)
+            # Verify video fallback extraction was triggered because audio_url was missing!
+            self.assertEqual(m_extract.call_count, 1)
+            self.assertTrue(storage.upload_audio.called)
+            self.assertTrue(storage.upload_channel_feed.called)
+
 
 if __name__ == "__main__":
     unittest.main()

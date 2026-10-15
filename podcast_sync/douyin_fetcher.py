@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -14,9 +15,6 @@ from curl_cffi import requests
 SCRATCH_REPO_PATH = Path(__file__).resolve().parent.parent / "scratch_repo"
 if str(SCRATCH_REPO_PATH) not in sys.path:
     sys.path.insert(0, str(SCRATCH_REPO_PATH))
-
-from src.interface.account import Account
-from src.testers import Params
 
 logger = logging.getLogger("douyin_fetcher")
 
@@ -92,6 +90,9 @@ class DouyinFetcher:
             )
         except Exception:
             pass
+
+        from src.interface.account import Account
+        from src.testers import Params
 
         async with Params() as params:
             params.cookie_str = self.cookie
@@ -257,5 +258,108 @@ class DouyinFetcher:
         except Exception as e:
             logger.warning(f"Failed to download image from {image_url}: {e}")
             return False
+
+    def download_video(self, video_url: str, output_path: Path) -> bool:
+        """Download full MP4 video stream from Douyin CDN (tries direct first for max speed, fallback to proxy).
+        Uses chunked streaming with socket-inactivity timeouts so large (150MB+) files are never prematurely killed.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_suffix(".tmp")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+        }
+
+        # 1. Try high-speed direct chunked streaming download first
+        try:
+            req = urllib.request.Request(video_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp, open(temp_path, "wb") as out_f:
+                if resp.status == 200:
+                    shutil.copyfileobj(resp, out_f, length=512 * 1024)
+            if temp_path.exists() and temp_path.stat().st_size > 1000:
+                temp_path.replace(output_path)
+                logger.info(f"Downloaded video directly to {output_path} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
+                return True
+        except Exception as e:
+            logger.warning(f"Direct video download failed ({e}), falling back to proxy...")
+            if temp_path.exists():
+                temp_path.unlink()
+
+        # 2. Fallback to proxy if direct failed
+        try:
+            handlers = []
+            if self.proxy:
+                handlers.append(urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
+            opener = urllib.request.build_opener(*handlers)
+            req = urllib.request.Request(video_url, headers=headers)
+            with opener.open(req, timeout=120) as resp, open(temp_path, "wb") as out_f:
+                if resp.status == 200:
+                    shutil.copyfileobj(resp, out_f, length=512 * 1024)
+            if temp_path.exists() and temp_path.stat().st_size > 1000:
+                temp_path.replace(output_path)
+                logger.info(f"Downloaded video via proxy to {output_path} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
+                return True
+            else:
+                logger.error(f"Video download failed for {video_url}")
+                return False
+        except Exception as e:
+            logger.error(f"Exception downloading video from {video_url}: {e}")
+            if temp_path.exists():
+                temp_path.unlink()
+            return False
+
+    def extract_audio_from_video(self, video_path: Path, output_audio_path: Path, quality: str = "4") -> bool:
+        """Extract and transcode audio to standard podcast MP3 format using ffmpeg."""
+        output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_audio = output_audio_path.with_suffix(".tmp.mp3")
+        if temp_audio.exists():
+            temp_audio.unlink()
+
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(video_path),
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-q:a", quality,
+            str(temp_audio),
+        ]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+            if res.returncode == 0 and temp_audio.exists() and temp_audio.stat().st_size > 500:
+                temp_audio.replace(output_audio_path)
+                logger.info(f"Extracted audio to {output_audio_path} ({output_audio_path.stat().st_size / 1024 / 1024:.2f} MB)")
+                return True
+            else:
+                logger.error(f"ffmpeg extraction failed (code {res.returncode}): {res.stderr}")
+                if temp_audio.exists():
+                    temp_audio.unlink()
+                return False
+        except Exception as e:
+            logger.error(f"Exception during ffmpeg audio extraction: {e}")
+            if temp_audio.exists():
+                temp_audio.unlink()
+            return False
+
+    def download_video_and_extract_audio(self, video_url: str, output_mp3_path: Path, quality: str = "4") -> bool:
+        """Fallback pipeline: Download MP4 video stream, extract to MP3 via ffmpeg, and clean up temporary video."""
+        output_mp3_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_video_path = output_mp3_path.with_suffix(".temp.mp4")
+
+        try:
+            logger.info("Downloading full MP4 video for audio extraction...")
+            if not self.download_video(video_url, temp_video_path):
+                logger.error("Failed to download video stream for extraction.")
+                return False
+
+            logger.info("Extracting standard MP3 podcast audio with ffmpeg...")
+            success = self.extract_audio_from_video(temp_video_path, output_mp3_path, quality=quality)
+            return success
+        finally:
+            # Always clean up the temporary large MP4 video file to save disk space
+            if temp_video_path.exists():
+                try:
+                    temp_video_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp video {temp_video_path}: {e}")
 
 

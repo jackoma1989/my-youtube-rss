@@ -314,12 +314,13 @@ async def sync_channel(
     for post in reversed(new_posts):
         vid = post["video_id"]
         title = post["title"]
-        audio_url = post["audio_url"]
+        audio_url = post.get("audio_url", "")
+        video_url = post.get("video_url", "")
         pub_date = post["pub_date"]
         duration = post["duration_seconds"]
 
-        if not audio_url:
-            logger.warning(f"[{channel_name}] Skipping [{vid}] '{title}': No audio play_url.")
+        if not audio_url and not video_url:
+            logger.warning(f"[{channel_name}] Skipping [{vid}] '{title}': No audio or video play_url.")
             continue
 
         temp_audio_path = channel_output_dir / f"{vid}.mp3"
@@ -329,10 +330,25 @@ async def sync_channel(
             logger.info(f"[DRY RUN] Simulating download for [{title}] ({vid})")
             file_size = 5000000
         else:
-            logger.info(f"Downloading audio for [{title}] ({vid})...")
-            if not fetcher.download_audio(audio_url, temp_audio_path):
-                logger.error(f"Failed to download audio for [{vid}]. Skipping.")
+            download_success = False
+
+            # 1. Try high-speed direct audio download first
+            if audio_url:
+                logger.info(f"Downloading direct audio for [{title}] ({vid})...")
+                download_success = fetcher.download_audio(audio_url, temp_audio_path)
+
+            # 2. Fallback to video download & ffmpeg audio extraction if audio_url is missing or direct audio failed
+            if not download_success and video_url:
+                if not audio_url:
+                    logger.info(f"[{channel_name}] No direct audio stream for [{vid}] '{title}', falling back to video stream download & ffmpeg extraction...")
+                else:
+                    logger.warning(f"[{channel_name}] Direct audio download failed for [{vid}], falling back to video extraction...")
+                download_success = fetcher.download_video_and_extract_audio(video_url, temp_audio_path)
+
+            if not download_success:
+                logger.error(f"Failed to obtain audio for [{vid}] '{title}'. Skipping.")
                 continue
+
             file_size = temp_audio_path.stat().st_size
 
             # Backup to iCloud if enabled
