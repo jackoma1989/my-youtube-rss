@@ -40,8 +40,10 @@ jobs:
             pip install -r scratch_repo/requirements.txt
           fi
 
-      - name: Check ffmpeg availability
+      - name: Install ffmpeg
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version | head -n 2
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
