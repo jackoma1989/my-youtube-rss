@@ -36,7 +36,7 @@ def download_stream(url: str, output_path: Path, proxy: Optional[str] = None) ->
     temp_path = output_path.with_suffix(".tmp")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Try direct download first
+    # 1. Try direct download first (Douyin CDN v26-web... usually allows direct high-speed download)
     start_time = time.perf_counter()
     try:
         req = urllib.request.Request(url, headers=headers)
@@ -54,7 +54,7 @@ def download_stream(url: str, output_path: Path, proxy: Optional[str] = None) ->
         if temp_path.exists():
             temp_path.unlink()
 
-    # 2. Try proxy download fallback
+    # 2. Try proxy download fallback (via TailSocks/China Proxy)
     if proxy:
         start_time = time.perf_counter()
         try:
@@ -163,60 +163,25 @@ async def main():
             logger.error("Could not resolve sec_uid")
             sys.exit(1)
 
-    # 1. Fetch raw items directly from Douyin API
-    logger.info("Fetching creator posts from Douyin API...")
-    import sys
-    sys.path.insert(0, str(PROJECT_ROOT / "scratch_repo"))
-    from src.interface.account import Account
-    from src.config import Parameter
+    logger.info("Fetching creator posts using DouyinFetcher...")
+    posts = await fetcher.fetch_creator_posts(sec_user_id=sec_uid, max_posts=max(args.count + 2, 5))
 
-    params = Parameter()
-    params.timeout = 45
-    params.max_pages = 1
-    if proxy:
-        params.proxy = proxy
-        from src.tools import create_client
-        params.client = create_client(timeout=params.timeout, proxy=proxy, impersonate=params.impersonate)
-
-    account = Account(
-        params=params,
-        cookie=cookie,
-        sec_user_id=sec_uid,
-        tab="post",
-        pages=1,
-        count=max(args.count + 2, 5),
-    )
-    account.params["uifid"] = fetcher.uifid
-    posts_raw, _, _ = await account.run()
-
-    if not posts_raw:
+    if not posts:
         logger.error("No posts returned from Douyin API.")
         sys.exit(1)
 
-    logger.info(f"Retrieved {len(posts_raw)} raw posts. Selecting {args.count} posts for benchmark...")
+    logger.info(f"Retrieved {len(posts)} posts. Selecting first {args.count} posts for benchmark...")
 
     results = []
-    for idx, item in enumerate(posts_raw[:args.count]):
-        aweme_id = item.get("aweme_id")
-        desc = item.get("desc", "").strip().split("\n")[0][:35]
-        duration_ms = item.get("duration", 0) or item.get("video", {}).get("duration", 0)
-        duration_sec = duration_ms / 1000.0 if duration_ms > 0 else 0
-
-        # Video stream url
-        video = item.get("video", {})
-        video_play_urls = (
-            video.get("play_addr", {}).get("url_list", [])
-            or video.get("play_addr_h264", {}).get("url_list", [])
-        )
-        video_url = video_play_urls[0] if video_play_urls else ""
-
-        # Direct audio stream url (if available)
-        music = item.get("music", {})
-        music_urls = music.get("play_url", {}).get("url_list", [])
-        audio_url = music_urls[0] if music_urls else ""
+    for idx, post in enumerate(posts[:args.count]):
+        aweme_id = post.get("video_id")
+        desc = post.get("title", "").strip()[:35]
+        duration_sec = post.get("duration_seconds", 0)
+        audio_url = post.get("audio_url", "")
+        video_url = post.get("video_url", "")
 
         logger.info(f"\n[{idx+1}/{args.count}] Testing Aweme ID: {aweme_id} | '{desc}'")
-        logger.info(f"   Video Duration: {duration_sec:.1f}s | Has Audio URL: {bool(audio_url)}")
+        logger.info(f"   Video Duration: {duration_sec}s | Has Audio URL: {bool(audio_url)} | Has Video URL: {bool(video_url)}")
 
         row = {
             "id": aweme_id,
@@ -321,24 +286,26 @@ async def main():
                 f"| `{r['id']}` | {r['title']} | {r['duration_sec']:.0f}秒 | {r['video_size_mb']:.1f} MB | **{r['video_dl_sec']:.2f}s** ({r['video_dl_speed']:.1f}MB/s) | {r['ffmpeg_copy_sec']*1000:.0f} ms | {r['ffmpeg_transcode_sec']:.2f} s | **{r['total_fallback_sec']:.2f} s** | {direct_str} |"
             )
         lines.append("")
-        
-        # Summary analysis
-        avg_vid_mb = sum(r['video_size_mb'] for r in results) / len(results) if results else 0
-        avg_dl_s = sum(r['video_dl_sec'] for r in results) / len(results) if results else 0
-        avg_trans_s = sum(r['ffmpeg_transcode_sec'] for r in results) / len(results) if results else 0
-        avg_total_s = sum(r['total_fallback_sec'] for r in results) / len(results) if results else 0
 
-        lines.extend([
-            "### 📊 性能汇总与数据分析",
-            f"- **平均单集视频体积**：约 `{avg_vid_mb:.1f} MB`（常见 1~3 分钟抖音视频大小在 15~35MB 之间）。",
-            f"- **平均视频下载时间**：约 `{avg_dl_s:.2f} 秒`（Runner 经国内代理或直连 CDN，平均带宽充足）。",
-            f"- **ffmpeg MP3 转码时间**：约 `{avg_trans_s:.2f} 秒`（GitHub Runner 2核 CPU 处理速度极快）。",
-            f"- **兜底方案完整耗时**：平均约 `{avg_total_s:.2f} 秒 / 集`（相比于直链音频的 2~3 秒，仅额外增加 3~6 秒）。",
-            "",
-            "### 💡 结论与建议",
-            "1. **耗时完全可控**：即便对缺少独立音频的视频启动视频下载+提取，单集增加的耗时仅在 **几秒钟（约 5~8 秒）**，完全不会导致 GitHub Actions 超时（默认单次运行限额 360 分钟）。",
-            "2. **推荐方案**：采用 **优先音频直下，缺失时自动视频回退抽取** 的双模策略，兼顾极速处理与 100% 内容覆盖率。",
-        ])
+        # Summary analysis
+        valid_results = [r for r in results if r['video_size_mb'] > 0]
+        if valid_results:
+            avg_vid_mb = sum(r['video_size_mb'] for r in valid_results) / len(valid_results)
+            avg_dl_s = sum(r['video_dl_sec'] for r in valid_results) / len(valid_results)
+            avg_trans_s = sum(r['ffmpeg_transcode_sec'] for r in valid_results) / len(valid_results)
+            avg_total_s = sum(r['total_fallback_sec'] for r in valid_results) / len(valid_results)
+
+            lines.extend([
+                "### 📊 性能汇总与数据分析",
+                f"- **平均单集视频体积**：约 `{avg_vid_mb:.1f} MB`（常见 1~3 分钟抖音视频大小在 15~35MB 之间）。",
+                f"- **平均视频下载时间**：约 `{avg_dl_s:.2f} 秒`（Runner 经国内代理或直连 CDN，平均带宽充足）。",
+                f"- **ffmpeg MP3 转码时间**：约 `{avg_trans_s:.2f} 秒`（GitHub Runner 2核 CPU 处理速度极快）。",
+                f"- **兜底方案完整耗时**：平均约 `{avg_total_s:.2f} 秒 / 集`（相比于直链音频的 2~3 秒，仅额外增加 3~6 秒）。",
+                "",
+                "### 💡 结论与建议",
+                "1. **耗时完全可控**：即便对缺少独立音频的视频启动视频下载+提取，单集增加的耗时仅在 **几秒钟（约 5~8 秒）**，完全不会导致 GitHub Actions 超时（默认单次运行限额 360 分钟）。",
+                "2. **推荐方案**：采用 **优先音频直下，缺失时自动视频回退抽取** 的双模策略，兼顾极速处理与 100% 内容覆盖率。",
+            ])
 
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

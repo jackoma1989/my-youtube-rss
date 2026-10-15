@@ -305,12 +305,24 @@ def send_new_episode_notification(
     if episode is None:
         return None
 
-    tg_token = bot_token or getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
-    tg_chat = chat_id or getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+    if bot_token is not None:
+        tg_token = bot_token
+    else:
+        tg_token = getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
+
+    if chat_id is not None:
+        tg_chat = chat_id
+    else:
+        tg_chat = getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+
     wc_token = kwargs.get("wechat_bot_token") or getattr(config, "wechat_bot_token", None) or os.environ.get("WECHAT_BOT_TOKEN") or os.environ.get("ILINK_BOT_TOKEN")
     wc_user = kwargs.get("wechat_user_id") or getattr(config, "wechat_user_id", None) or os.environ.get("WECHAT_USER_ID")
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
+
+    # If neither Telegram nor WeChat is configured, return None immediately
+    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+        return None
 
     res = send_dual_episode_notification(
         platform="youtube",
@@ -342,12 +354,24 @@ def send_douyin_episode_notification(
     if episode is None:
         return None
 
-    tg_token = bot_token or getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
-    tg_chat = chat_id or getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+    if bot_token is not None:
+        tg_token = bot_token
+    else:
+        tg_token = getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
+
+    if chat_id is not None:
+        tg_chat = chat_id
+    else:
+        tg_chat = getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+
     wc_token = kwargs.get("wechat_bot_token") or getattr(config, "wechat_bot_token", None) or os.environ.get("WECHAT_BOT_TOKEN") or os.environ.get("ILINK_BOT_TOKEN")
     wc_user = kwargs.get("wechat_user_id") or getattr(config, "wechat_user_id", None) or os.environ.get("WECHAT_USER_ID")
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
+
+    # If neither Telegram nor WeChat is configured, return None immediately
+    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+        return None
 
     res = send_dual_episode_notification(
         platform="douyin",
@@ -379,12 +403,24 @@ def send_bilibili_episode_notification(
     if episode is None:
         return None
 
-    tg_token = bot_token or getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
-    tg_chat = chat_id or getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+    if bot_token is not None:
+        tg_token = bot_token
+    else:
+        tg_token = getattr(config, "telegram_bot_token", None) or os.environ.get("TELEGRAM_BOT_TOKEN")
+
+    if chat_id is not None:
+        tg_chat = chat_id
+    else:
+        tg_chat = getattr(config, "telegram_chat_id", None) or os.environ.get("TELEGRAM_CHAT_ID")
+
     wc_token = kwargs.get("wechat_bot_token") or getattr(config, "wechat_bot_token", None) or os.environ.get("WECHAT_BOT_TOKEN") or os.environ.get("ILINK_BOT_TOKEN")
     wc_user = kwargs.get("wechat_user_id") or getattr(config, "wechat_user_id", None) or os.environ.get("WECHAT_USER_ID")
     wc_ctx = kwargs.get("wechat_context_token") or getattr(config, "wechat_context_token", None) or os.environ.get("WECHAT_CONTEXT_TOKEN")
     wc_base = kwargs.get("wechat_base_url") or getattr(config, "wechat_base_url", "https://ilinkai.weixin.qq.com") or os.environ.get("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")
+
+    # If neither Telegram nor WeChat is configured, return None immediately
+    if not (tg_token and tg_chat) and not (wc_token and wc_user):
+        return None
 
     res = send_dual_episode_notification(
         platform="bilibili",

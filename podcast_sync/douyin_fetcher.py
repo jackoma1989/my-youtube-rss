@@ -140,6 +140,11 @@ class DouyinFetcher:
                 duration = int(music.get("duration", 0))
 
                 video = item.get("video", {})
+                video_urls = (
+                    video.get("play_addr", {}).get("url_list", [])
+                    or video.get("play_addr_h264", {}).get("url_list", [])
+                )
+                video_url = video_urls[0] if video_urls else ""
                 cover_urls = video.get("cover", {}).get("url_list", [])
                 cover_url = cover_urls[0] if cover_urls else ""
 
@@ -164,6 +169,7 @@ class DouyinFetcher:
                     "pub_date": pub_date,
                     "duration_seconds": duration,
                     "audio_url": audio_url,
+                    "video_url": video_url,
                     "cover_url": cover_url,
                     "avatar_url": avatar_url,
                     "author_name": nickname,
