@@ -323,10 +323,6 @@ class YouTubeFetcher:
         ydl_opts = {
             "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/best",
             "outtmpl": out_template,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": ["zh-Hans", "zh-CN", "zh", "zh-Hant", "zh-TW", "en", "en-US"],
-            "subtitlesformat": "vtt",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -341,7 +337,7 @@ class YouTubeFetcher:
         if self._cookie_file and os.path.exists(self._cookie_file):
             ydl_opts["cookiefile"] = self._cookie_file
 
-        logger.info(f"Downloading audio and subtitles for {video_id} -> {target_audio_file}")
+        logger.info(f"Downloading audio for {video_id} -> {target_audio_file}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
 
@@ -367,7 +363,13 @@ class YouTubeFetcher:
         thumbnails = info.get("thumbnails") or []
         thumb_url = thumbnails[-1].get("url") if thumbnails else info.get("thumbnail")
         file_size = target_audio_file.stat().st_size
-        transcripts_meta = self._find_and_normalize_subtitles(video_id, output_dir)
+
+        # Best-effort subtitle download: subtitle failure or 429 must NEVER block audio sync
+        transcripts_meta = []
+        try:
+            transcripts_meta = self.fetch_subtitles_for_video(video_id, output_dir)
+        except Exception as e:
+            logger.warning(f"Best-effort subtitle fetch failed for {video_id}: {e}")
 
         return {
             "video_id": video_id,
