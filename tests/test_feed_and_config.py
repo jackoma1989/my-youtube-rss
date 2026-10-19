@@ -492,26 +492,17 @@ class TestPodcastSync(unittest.TestCase):
             url = storage.upload_transcript(dummy_vtt, "wangzhian", "v123", "zh-Hans")
             self.assertEqual(url, "https://podcast.hemajia.fun/transcripts/wangzhian/v123.zh-Hans.vtt")
 
-    def test_youtube_subtitle_normalization(self):
+    def test_youtube_subtitles_disabled(self):
         from podcast_sync.youtube import YouTubeFetcher
         cfg = Config(dry_run=True)
         yt = YouTubeFetcher(cfg)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            (tmp_path / "vid1.zh-Hans.vtt").write_text("WEBVTT", encoding="utf-8")
-            (tmp_path / "vid1.en.vtt").write_text("WEBVTT", encoding="utf-8")
-            (tmp_path / "vid1.zh-Hant.vtt").write_text("WEBVTT", encoding="utf-8")
+            subs = yt.fetch_subtitles_for_video("vid1", tmp_path)
+            self.assertEqual(subs, [])
 
-            subs = yt._find_and_normalize_subtitles("vid1", tmp_path)
-            langs = [s["language"] for s in subs]
-            self.assertIn("zh-CN", langs)
-            self.assertIn("en", langs)
-            self.assertIn("zh-TW", langs)
-            # zh-CN should be sorted first
-            self.assertEqual(subs[0]["language"], "zh-CN")
-
-    def test_subtitle_backfill_in_sync_single_channel(self):
+    def test_subtitles_disabled_in_sync_single_channel(self):
         from unittest.mock import MagicMock
         from podcast_sync.main import sync_single_channel
         from podcast_sync.storage import StorageManager
@@ -550,79 +541,34 @@ class TestPodcastSync(unittest.TestCase):
                 {"title": "Test Show", "link": "https://www.youtube.com/@testch", "description": "Desc", "author": "Host", "image_url": ""},
                 [{"id": "existing_1", "title": "Existing Episode"}]
             ))
-
-            # When backfill is called, return a dummy subtitle
-            dummy_vtt = tmp_path / "existing_1.zh-Hans.vtt"
-            dummy_vtt.write_text("WEBVTT\n00:00:01.000 --> 00:00:04.000\nHello", encoding="utf-8")
-            yt.fetch_subtitles_for_video = MagicMock(return_value=[{
-                "language": "zh-CN",
-                "lang_suffix": "zh-Hans",
-                "local_vtt_path": dummy_vtt,
-            }])
+            yt.fetch_subtitles_for_video = MagicMock(return_value=[])
 
             res = sync_single_channel(channel_cfg, cfg, storage, yt)
             self.assertEqual(res["total"], 1)
-            # Verify subtitles were backfilled onto the existing episode!
-            self.assertEqual(len(existing_ep.transcripts), 1)
-            self.assertEqual(existing_ep.transcripts[0].language, "zh-CN")
-            self.assertIn("existing_1.zh-Hans.vtt", existing_ep.transcripts[0].url)
-            # Verify manifest was saved
-            storage.save_episodes_manifest.assert_called_once()
-
-    def test_no_subtitles_permanently_marked_and_not_retried(self):
-        from unittest.mock import MagicMock
-        from podcast_sync.main import sync_single_channel
-        from podcast_sync.storage import StorageManager
-        from podcast_sync.youtube import YouTubeFetcher
-        from datetime import timedelta
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            cfg = Config(dry_run=True, output_dir=tmp_path, r2_public_url="https://podcast.hemajia.fun")
-            channel_cfg = ChannelConfig(id="testch", url="https://www.youtube.com/@testch")
-
-            # 1. Existing episode published 3 days ago (older than 24h), no subtitles
-            old_pub = datetime.now(timezone.utc) - timedelta(days=3)
-            ep = PodcastEpisode(
-                video_id="silent_video",
-                title="Silent Video",
-                description="No audio/speech",
-                pub_date=old_pub,
-                duration_seconds=60,
-                audio_filename="audio/testch/silent_video.m4a",
-                audio_url="https://podcast.hemajia.fun/audio/testch/silent_video.m4a",
-                file_size_bytes=1000,
-                transcripts=[],
-                transcripts_checked=False,
-                transcripts_check_count=0,
-            )
-
-            storage = StorageManager(cfg)
-            storage.load_episodes_manifest = MagicMock(return_value=[ep])
-            storage.load_ignored_videos = MagicMock(return_value={})
-            storage.cleanup_orphan_and_expired_audio = MagicMock()
-            storage.cleanup_orphan_and_expired_transcripts = MagicMock()
-            storage.save_episodes_manifest = MagicMock()
-            storage.upload_channel_feed = MagicMock(return_value="https://podcast.hemajia.fun/testch.xml")
-
-            yt = YouTubeFetcher(cfg)
-            yt.get_channel_info_and_entries = MagicMock(return_value=(
-                {"title": "Test Show", "link": "https://www.youtube.com/@testch", "description": "Desc", "author": "Host", "image_url": ""},
-                [{"id": "silent_video", "title": "Silent Video"}]
-            ))
-            # fetch_subtitles_for_video returns empty list (no subtitles on YouTube)
-            yt.fetch_subtitles_for_video = MagicMock(return_value=[])
-
-            # First run: attempts check once, finds nothing, marks transcripts_checked = True!
-            sync_single_channel(channel_cfg, cfg, storage, yt)
-            self.assertEqual(yt.fetch_subtitles_for_video.call_count, 1)
-            self.assertTrue(ep.transcripts_checked)
-            self.assertEqual(ep.transcripts, [])
-
-            # Second run: transcripts_checked is already True -> yt.fetch_subtitles_for_video should NEVER be called!
-            yt.fetch_subtitles_for_video.reset_mock()
-            sync_single_channel(channel_cfg, cfg, storage, yt)
+            # Subtitle backfill is completely disabled: fetch_subtitles_for_video is NEVER called
             self.assertEqual(yt.fetch_subtitles_for_video.call_count, 0)
+            self.assertEqual(existing_ep.transcripts, [])
+
+    def test_notifier_omits_subtitles(self):
+        from podcast_sync.notifier import _format_episode_plain, _format_episode_feishu_markdown
+
+        ep = PodcastEpisode(
+            video_id="ep1",
+            title="Episode 1",
+            description="Desc",
+            pub_date=datetime(2026, 9, 17, 8, 0, 0, tzinfo=timezone.utc),
+            duration_seconds=180,
+            audio_filename="audio/test/ep1.m4a",
+            audio_url="https://podcast.hemajia.fun/audio/test/ep1.m4a",
+            file_size_bytes=5000,
+            transcripts=[],
+        )
+
+        plain_text = _format_episode_plain("YouTube", "频道", "测试频道", ep, "https://podcast.hemajia.fun/feed.xml")
+        feishu_text = _format_episode_feishu_markdown("YouTube", "频道", "测试频道", ep, "https://podcast.hemajia.fun/feed.xml")
+
+        self.assertNotIn("字幕", plain_text)
+        self.assertNotIn("字幕", feishu_text)
 
     def test_wechat_and_dual_notifications(self):
         from unittest.mock import patch, MagicMock

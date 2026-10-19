@@ -251,20 +251,7 @@ def sync_single_bilibili_channel(
         # 4. Upload audio to R2
         r2_audio_url = storage.upload_audio(audio_file, channel_id, vid)
 
-        # 5. Upload subtitles if available
-        transcripts: List[PodcastTranscript] = []
-        for sub in dl_res.get("subtitles", []):
-            try:
-                sub_path = sub["local_path"]
-                # Extract lang from filename e.g. BV123.ai-zh.vtt
-                parts = sub_path.stem.split(".")
-                lang_code = parts[-1] if len(parts) > 1 else "zh-CN"
-                sub_url = storage.upload_transcript(sub_path, channel_id, vid, lang_code)
-                transcripts.append(PodcastTranscript(url=sub_url, type="text/vtt", language=lang_code))
-            except Exception as e:
-                logger.warning(f"Failed to upload transcript for {vid}: {e}")
-
-        # 6. Copy to iCloud backup if available
+        # 5. Copy to iCloud backup if available
         if icloud_dir and not cfg.dry_run:
             safe_name = sanitize_filename(f"{channel_name} - {title}")
             dest_file = icloud_dir / f"{safe_name}{audio_file.suffix}"
@@ -274,7 +261,7 @@ def sync_single_bilibili_channel(
             except Exception as e:
                 logger.warning(f"Failed to copy to iCloud {dest_file}: {e}")
 
-        # 7. Create Episode object
+        # 6. Create Episode object
         episode = PodcastEpisode(
             video_id=vid,
             title=title,
@@ -286,7 +273,7 @@ def sync_single_bilibili_channel(
             file_size_bytes=dl_res["file_size"],
             thumbnail_url=thumb_url,
             webpage_url=webpage_url,
-            transcripts=transcripts,
+            transcripts=[],
             transcripts_checked=True,
         )
         newly_added_episodes.append(episode)

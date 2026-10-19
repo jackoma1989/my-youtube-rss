@@ -396,9 +396,6 @@ class BilibiliFetcher:
         video_url = f"https://www.bilibili.com/video/{video_id}"
         opts = self._get_base_opts(use_proxy=False)
         opts["skip_download"] = True
-        opts["writesubtitles"] = True
-        opts["writeautomaticsub"] = True
-        opts["subtitleslangs"] = ["ai-zh", "zh-Hans", "zh-CN", "zh"]
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -409,9 +406,6 @@ class BilibiliFetcher:
                 try:
                     opts_p = self._get_base_opts(use_proxy=True)
                     opts_p["skip_download"] = True
-                    opts_p["writesubtitles"] = True
-                    opts_p["writeautomaticsub"] = True
-                    opts_p["subtitleslangs"] = ["ai-zh", "zh-Hans", "zh-CN", "zh"]
                     with yt_dlp.YoutubeDL(opts_p) as ydl_p:
                         return ydl_p.extract_info(video_url, download=False)
                 except Exception as ep:
@@ -543,10 +537,6 @@ class BilibiliFetcher:
             opts.update({
                 "format": "ba[ext=m4a]/ba[acodec^=mp4a]/bestaudio/worstvideo[ext=mp4]+bestaudio/worst[ext=mp4]/worst",
                 "outtmpl": out_template,
-                "writesubtitles": True,
-                "writeautomaticsub": True,
-                "subtitleslangs": ["ai-zh", "zh-Hans", "zh-CN", "zh"],
-                "subtitlesformat": "vtt",
                 "socket_timeout": 30,
                 "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
             })
@@ -563,35 +553,6 @@ class BilibiliFetcher:
                         download_success = True
             except Exception as ep:
                 logger.error(f"Fallback download failed for [{video_id}]: {ep}")
-
-        # 5. Extract subtitles from metadata if available
-        sub_dict = info.get("subtitles") or info.get("automatic_captions") or {}
-        for lang in ("ai-zh", "zh-Hans", "zh-CN", "zh"):
-            if lang in sub_dict:
-                for sub_item in sub_dict[lang]:
-                    sub_target = output_dir / f"{video_id}.{lang}.vtt"
-                    if "data" in sub_item and sub_item["data"]:
-                        try:
-                            data_str = sub_item["data"]
-                            if not data_str.startswith("WEBVTT"):
-                                vtt_lines = ["WEBVTT\n"]
-                                for line in data_str.splitlines():
-                                    if " --> " in line:
-                                        line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", line)
-                                    vtt_lines.append(line)
-                                data_str = "\n".join(vtt_lines)
-                            sub_target.write_text(data_str, encoding="utf-8")
-                            break
-                        except Exception:
-                            pass
-                    elif sub_item.get("url"):
-                        try:
-                            sr = requests.get(sub_item["url"], timeout=10)
-                            if sr.status_code == 200:
-                                sub_target.write_text(sr.text, encoding="utf-8")
-                                break
-                        except Exception:
-                            pass
 
         if not target_audio_file.exists():
             logger.error(f"Failed to download audio for [{video_id}] after all attempts")
@@ -618,31 +579,6 @@ class BilibiliFetcher:
         thumbnail = info.get("thumbnail") or ""
         uploader = info.get("uploader") or ""
 
-        # Check for downloaded subtitles (.vtt or .srt)
-        subtitles = []
-        for sub_file in output_dir.glob(f"{video_id}*.*"):
-            if sub_file.suffix.lower() == ".vtt":
-                subtitles.append({
-                    "local_path": sub_file,
-                    "filename": sub_file.name,
-                })
-            elif sub_file.suffix.lower() == ".srt":
-                vtt_target = sub_file.with_suffix(".vtt")
-                try:
-                    content = sub_file.read_text(encoding="utf-8", errors="replace")
-                    vtt_lines = ["WEBVTT\n"]
-                    for line in content.splitlines():
-                        if " --> " in line:
-                            line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", line)
-                        vtt_lines.append(line)
-                    vtt_target.write_text("\n".join(vtt_lines), encoding="utf-8")
-                    subtitles.append({
-                        "local_path": vtt_target,
-                        "filename": vtt_target.name,
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to convert SRT to VTT for {sub_file}: {e}")
-
         return {
             "video_id": video_id,
             "audio_file": target_audio_file,
@@ -654,5 +590,5 @@ class BilibiliFetcher:
             "thumbnail_url": thumbnail,
             "uploader": uploader,
             "webpage_url": video_url,
-            "subtitles": subtitles,
+            "subtitles": [],
         }

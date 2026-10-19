@@ -335,8 +335,6 @@ def _format_episode_plain(
         f"⏱️ 时长: {duration_str}",
         f"📅 发布: {pub_str}",
     ]
-    if getattr(episode, "transcripts", None):
-        lines.append(f"📝 字幕: 已就绪 ({', '.join([t.language for t in episode.transcripts])})")
     if feed_url:
         lines.append(f"📻 播客源: {feed_url}")
     if episode.webpage_url:
@@ -366,8 +364,6 @@ def _format_episode_feishu_markdown(
         f"**⏱️ 时长**: {duration_str}",
         f"**📅 发布**: {pub_str}",
     ]
-    if getattr(episode, "transcripts", None):
-        lines.append(f"**📝 字幕**: 已就绪 ({', '.join([t.language for t in episode.transcripts])})")
     if feed_url:
         lines.append(f"**📻 播客源**: `{feed_url}`")
     if episode.webpage_url:
@@ -446,8 +442,6 @@ def send_dual_episode_notification(
                 f"⏱️ <b>时长</b>: {duration_str}",
                 f"📅 <b>发布</b>: {pub_str}",
             ]
-            if getattr(episode, "transcripts", None):
-                tg_lines.append(f"📝 <b>字幕</b>: 已就绪 ({', '.join([t.language for t in episode.transcripts])})")
             tg_lines.append("")
             if feed_url:
                 tg_lines.append(f"📻 <b>播客源</b>: <code>{feed_url}</code>")
