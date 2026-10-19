@@ -359,15 +359,17 @@ def sync_single_channel(
     # 9. Upload feed.xml
     feed_url = storage.upload_channel_feed(channel_id, rss_xml, is_primary=is_primary)
 
-    # 10. Send dual notifications (WeChat / Telegram) for new episodes (if configured and retained in feed)
+    # 10. Send notifications (Feishu / WeChat / Telegram) for new episodes (if configured and retained in feed)
     retained_ids = {ep.video_id for ep in retained_episodes}
     valid_new_episodes = [ep for ep in new_episodes if ep.video_id in retained_ids]
     has_notification = bool(
         (config.telegram_bot_token and config.telegram_chat_id)
         or (config.wechat_bot_token and config.wechat_user_id)
+        or config.feishu_webhook_url
+        or (config.feishu_app_id and config.feishu_app_secret and config.feishu_receive_id)
     )
     if valid_new_episodes and has_notification:
-        logger.info(f"[{channel_id}] Sending dual notifications (WeChat / Telegram) for {len(valid_new_episodes)} new episode(s)...")
+        logger.info(f"[{channel_id}] Sending episode notifications (Feishu / WeChat / Telegram) for {len(valid_new_episodes)} new episode(s)...")
         for new_ep in valid_new_episodes:
             try:
                 send_new_episode_notification(

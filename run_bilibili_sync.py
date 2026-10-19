@@ -353,16 +353,18 @@ def sync_single_bilibili_channel(
     feed_url = storage.upload_channel_feed(channel_id, rss_xml)
     logger.info(f"[{channel_name}] RSS Feed successfully published: {feed_url}")
 
-    # 11. Send Dual Notification (WeChat / Telegram) for new episodes that are actually retained in the feed
+    # 11. Send notification (Feishu / WeChat / Telegram) for new episodes that are actually retained in the feed
     retained_ids = {ep.video_id for ep in retained}
     valid_new_episodes = [ep for ep in newly_added_episodes if ep.video_id in retained_ids]
     has_notification = bool(
         (cfg.telegram_bot_token and cfg.telegram_chat_id)
         or (cfg.wechat_bot_token and cfg.wechat_user_id)
+        or cfg.feishu_webhook_url
+        or (cfg.feishu_app_id and cfg.feishu_app_secret and cfg.feishu_receive_id)
     )
     if not cfg.dry_run and has_notification:
         for ep in valid_new_episodes:
-            logger.info(f"Sending dual notification for [{ep.title}]...")
+            logger.info(f"Sending notification for [{ep.title}]...")
             send_bilibili_episode_notification(
                 creator_name=channel_name,
                 episode=ep,

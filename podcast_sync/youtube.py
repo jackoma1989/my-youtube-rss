@@ -1,6 +1,8 @@
 import logging
 import os
+import re
 import tempfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -10,6 +12,49 @@ import yt_dlp
 from .config import ChannelConfig, Config
 
 logger = logging.getLogger(__name__)
+
+
+def is_valid_youtube_video_id(video_id: str) -> bool:
+    """Check if the string is a standard 11-character YouTube video ID."""
+    if not video_id or len(video_id) != 11:
+        return False
+    return bool(re.match(r"^[a-zA-Z0-9_-]{11}$", video_id))
+
+
+def flatten_and_filter_youtube_entries(raw_entries: List[dict], max_items: int = 15) -> List[dict]:
+    """
+    Recursively traverse and flatten yt-dlp entries.
+    Handles channel tabs (Videos, Live, Shorts) and playlist hierarchies.
+    Filters out playlists, channels, and invalid non-video items, ensuring only valid 11-char YouTube video entries are returned.
+    """
+    flat: List[dict] = []
+    seen_ids = set()
+
+    def _collect(entries_list):
+        for item in entries_list:
+            if not item:
+                continue
+            # If item is a playlist / tab wrapper or contains sub-entries
+            if item.get("_type") == "playlist" or "entries" in item:
+                sub_entries = item.get("entries") or []
+                _collect(sub_entries)
+            else:
+                vid = item.get("id") or ""
+                # Also check URL if ID is not directly populated
+                if not is_valid_youtube_video_id(vid) and item.get("url"):
+                    parsed = urllib.parse.urlparse(item["url"])
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if "v" in qs and qs["v"]:
+                        vid = qs["v"][0]
+
+                if is_valid_youtube_video_id(vid):
+                    if vid not in seen_ids:
+                        seen_ids.add(vid)
+                        item["id"] = vid  # normalize id
+                        flat.append(item)
+
+    _collect(raw_entries)
+    return flat[:max_items]
 
 
 def sanitize_vtt_file(vtt_path: Path) -> None:
@@ -84,11 +129,11 @@ class YouTubeFetcher:
             channel_info: {title, description, author, image_url, link}
             entries: list of video info dicts
         """
-        url = channel_config.url.strip()
+        url = channel_config.url.strip().rstrip("/")
         if ("youtube.com/@" in url or "youtube.com/channel/" in url or "youtube.com/c/" in url) and not (
             url.endswith("/videos") or url.endswith("/streams") or url.endswith("/shorts")
         ):
-            fetch_url = url.rstrip("/") + "/videos"
+            fetch_url = url + "/videos"
         else:
             fetch_url = url
 
@@ -102,7 +147,7 @@ class YouTubeFetcher:
         if not data:
             raise RuntimeError(f"Could not extract channel data from {fetch_url}")
 
-        channel_title = (
+        raw_title = (
             channel_config.title
             or channel_config.name
             or data.get("channel")
@@ -110,6 +155,12 @@ class YouTubeFetcher:
             or data.get("title")
             or f"Channel {channel_config.id}"
         )
+        # Strip tab suffix if present in title (e.g., '清月已经不困了 - Videos' -> '清月已经不困了')
+        for tab_suffix in (" - Videos", " - Live", " - Shorts", " - Streams"):
+            if raw_title.endswith(tab_suffix):
+                raw_title = raw_title[: -len(tab_suffix)]
+        channel_title = raw_title
+
         channel_desc = (
             channel_config.description
             or data.get("description")
@@ -141,7 +192,7 @@ class YouTubeFetcher:
         }
 
         raw_entries = data.get("entries") or []
-        entries = [e for e in raw_entries if e and e.get("id")]
+        entries = flatten_and_filter_youtube_entries(raw_entries, max_items=channel_config.max_episodes)
         logger.info(f"Found {len(entries)} recent videos for [{channel_config.id}] {channel_title}")
         return channel_info, entries
 

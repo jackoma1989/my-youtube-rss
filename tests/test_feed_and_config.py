@@ -879,6 +879,46 @@ class TestPodcastSync(unittest.TestCase):
             self.assertEqual(call_kw["feishu_app_secret"], "sec_cfg")
             self.assertEqual(call_kw["feishu_receive_id"], "oc_cfg")
 
+    def test_youtube_flatten_and_filter_entries(self):
+        from podcast_sync.youtube import flatten_and_filter_youtube_entries, is_valid_youtube_video_id
+
+        # 1. Test video ID validation
+        self.assertTrue(is_valid_youtube_video_id("dQw4w9WgXcQ"))
+        self.assertTrue(is_valid_youtube_video_id("zN6NRq9779M"))
+        self.assertFalse(is_valid_youtube_video_id("UC9Zr2ImHA-0wKVjdF34IVBA"))  # Channel ID (24 chars)
+        self.assertFalse(is_valid_youtube_video_id(""))
+        self.assertFalse(is_valid_youtube_video_id("too_short"))
+
+        # 2. Test nested playlist/tabs (like qingyuex channel structure)
+        raw_mock = [
+            {
+                "_type": "playlist",
+                "id": "UC9Zr2ImHA-0wKVjdF34IVBA",
+                "title": "清月已经不困了 - Videos",
+                "entries": [
+                    {"id": "zN6NRq9779M", "title": "Real Video 1"},
+                    {"id": "hqUnzqtrFMY", "title": "Real Video 2"},
+                ],
+            },
+            {
+                "_type": "playlist",
+                "id": "UC9Zr2ImHA-0wKVjdF34IVBA",
+                "title": "清月已经不困了 - Shorts",
+                "entries": [
+                    {"id": "oqfE9KHaSIs", "title": "Shorts 1"},
+                    {"id": "zN6NRq9779M", "title": "Duplicate Video 1"},
+                ],
+            },
+            # Channel/invalid leaf entry
+            {"id": "UC9Zr2ImHA-0wKVjdF34IVBA", "title": "Channel Header"},
+        ]
+
+        flattened = flatten_and_filter_youtube_entries(raw_mock, max_items=15)
+        self.assertEqual(len(flattened), 3)
+        self.assertEqual([e["id"] for e in flattened], ["zN6NRq9779M", "hqUnzqtrFMY", "oqfE9KHaSIs"])
+        # Channel ID must NEVER be included
+        self.assertNotIn("UC9Zr2ImHA-0wKVjdF34IVBA", [e["id"] for e in flattened])
+
 
 if __name__ == "__main__":
     unittest.main()
