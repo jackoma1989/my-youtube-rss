@@ -889,15 +889,23 @@ class TestPodcastSync(unittest.TestCase):
         self.assertFalse(is_valid_youtube_video_id(""))
         self.assertFalse(is_valid_youtube_video_id("too_short"))
 
-        # 2. Test nested playlist/tabs (like qingyuex channel structure)
+        # 2. Test nested playlist/tabs: strictly keeps Videos tab, excludes Shorts & Live
         raw_mock = [
             {
                 "_type": "playlist",
                 "id": "UC9Zr2ImHA-0wKVjdF34IVBA",
                 "title": "清月已经不困了 - Videos",
                 "entries": [
-                    {"id": "zN6NRq9779M", "title": "Real Video 1"},
-                    {"id": "hqUnzqtrFMY", "title": "Real Video 2"},
+                    {"id": "zN6NRq9779M", "title": "Real Video 1", "url": "https://www.youtube.com/watch?v=zN6NRq9779M"},
+                    {"id": "hqUnzqtrFMY", "title": "Real Video 2", "url": "https://www.youtube.com/watch?v=hqUnzqtrFMY"},
+                ],
+            },
+            {
+                "_type": "playlist",
+                "id": "UC9Zr2ImHA-0wKVjdF34IVBA",
+                "title": "清月已经不困了 - Live",
+                "entries": [
+                    {"id": "tK5vvHU4xHw", "title": "Live Stream 1", "url": "https://www.youtube.com/watch?v=tK5vvHU4xHw"},
                 ],
             },
             {
@@ -905,8 +913,8 @@ class TestPodcastSync(unittest.TestCase):
                 "id": "UC9Zr2ImHA-0wKVjdF34IVBA",
                 "title": "清月已经不困了 - Shorts",
                 "entries": [
-                    {"id": "oqfE9KHaSIs", "title": "Shorts 1"},
-                    {"id": "zN6NRq9779M", "title": "Duplicate Video 1"},
+                    {"id": "oqfE9KHaSIs", "title": "Shorts 1", "url": "https://www.youtube.com/shorts/oqfE9KHaSIs"},
+                    {"id": "zN6NRq9779M", "title": "Duplicate Video 1", "url": "https://www.youtube.com/watch?v=zN6NRq9779M"},
                 ],
             },
             # Channel/invalid leaf entry
@@ -914,10 +922,24 @@ class TestPodcastSync(unittest.TestCase):
         ]
 
         flattened = flatten_and_filter_youtube_entries(raw_mock, max_items=15)
-        self.assertEqual(len(flattened), 3)
-        self.assertEqual([e["id"] for e in flattened], ["zN6NRq9779M", "hqUnzqtrFMY", "oqfE9KHaSIs"])
-        # Channel ID must NEVER be included
+        # Only regular videos must be retained (no Live, no Shorts)
+        self.assertEqual(len(flattened), 2)
+        self.assertEqual([e["id"] for e in flattened], ["zN6NRq9779M", "hqUnzqtrFMY"])
+        # Channel ID, Live streams, and Shorts must NEVER be included
         self.assertNotIn("UC9Zr2ImHA-0wKVjdF34IVBA", [e["id"] for e in flattened])
+        self.assertNotIn("tK5vvHU4xHw", [e["id"] for e in flattened])
+        self.assertNotIn("oqfE9KHaSIs", [e["id"] for e in flattened])
+
+        # 3. Test leaf-level filtering for individual Shorts and Live items
+        mixed_leafs = [
+            {"id": "11111111111", "title": "Regular Video", "url": "https://www.youtube.com/watch?v=11111111111"},
+            {"id": "22222222222", "title": "Short Video", "url": "https://www.youtube.com/shorts/22222222222"},
+            {"id": "33333333333", "title": "Active Live", "url": "https://www.youtube.com/watch?v=33333333333", "is_live": True},
+            {"id": "44444444444", "title": "Upcoming Live", "url": "https://www.youtube.com/watch?v=44444444444", "live_status": "is_upcoming"},
+        ]
+        leaf_res = flatten_and_filter_youtube_entries(mixed_leafs, max_items=10)
+        self.assertEqual(len(leaf_res), 1)
+        self.assertEqual(leaf_res[0]["id"], "11111111111")
 
 
 if __name__ == "__main__":

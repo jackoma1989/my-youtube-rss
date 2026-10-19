@@ -24,9 +24,17 @@ def is_valid_youtube_video_id(video_id: str) -> bool:
 def flatten_and_filter_youtube_entries(raw_entries: List[dict], max_items: int = 15) -> List[dict]:
     """
     Recursively traverse and flatten yt-dlp entries.
-    Handles channel tabs (Videos, Live, Shorts) and playlist hierarchies.
+    Strictly keeps regular uploaded videos, explicitly filtering out Live streams and Shorts.
     Filters out playlists, channels, and invalid non-video items, ensuring only valid 11-char YouTube video entries are returned.
     """
+    # If multiple tab playlists exist (e.g., Videos, Live, Shorts), prioritize and strictly pick the Videos tab
+    video_tabs = [
+        item for item in raw_entries
+        if item and (item.get("_type") == "playlist" or "entries" in item)
+        and (item.get("title") or "").strip().lower().endswith(" - videos")
+    ]
+    entries_to_process = video_tabs if video_tabs else raw_entries
+
     flat: List[dict] = []
     seen_ids = set()
 
@@ -34,15 +42,34 @@ def flatten_and_filter_youtube_entries(raw_entries: List[dict], max_items: int =
         for item in entries_list:
             if not item:
                 continue
+
+            tab_title = (item.get("title") or "").strip().lower()
+            # Explicitly exclude Live, Streams, and Shorts playlist tabs
+            if any(tab_title.endswith(sfx) for sfx in (" - live", " - streams", " - shorts")):
+                logger.debug(f"Excluding non-video playlist tab: {item.get('title')}")
+                continue
+
             # If item is a playlist / tab wrapper or contains sub-entries
             if item.get("_type") == "playlist" or "entries" in item:
                 sub_entries = item.get("entries") or []
                 _collect(sub_entries)
             else:
+                item_url = item.get("url") or item.get("webpage_url") or ""
+
+                # 1. Strictly exclude YouTube Shorts
+                if "/shorts/" in item_url:
+                    logger.debug(f"Excluding YouTube Short: [{item.get('id')}] {item.get('title')}")
+                    continue
+
+                # 2. Strictly exclude active or upcoming Live streams
+                if item.get("is_live") is True or item.get("live_status") in ("is_live", "is_upcoming"):
+                    logger.debug(f"Excluding Live stream: [{item.get('id')}] {item.get('title')}")
+                    continue
+
                 vid = item.get("id") or ""
                 # Also check URL if ID is not directly populated
-                if not is_valid_youtube_video_id(vid) and item.get("url"):
-                    parsed = urllib.parse.urlparse(item["url"])
+                if not is_valid_youtube_video_id(vid) and item_url:
+                    parsed = urllib.parse.urlparse(item_url)
                     qs = urllib.parse.parse_qs(parsed.query)
                     if "v" in qs and qs["v"]:
                         vid = qs["v"][0]
@@ -53,7 +80,7 @@ def flatten_and_filter_youtube_entries(raw_entries: List[dict], max_items: int =
                         item["id"] = vid  # normalize id
                         flat.append(item)
 
-    _collect(raw_entries)
+    _collect(entries_to_process)
     return flat[:max_items]
 
 
@@ -130,10 +157,17 @@ class YouTubeFetcher:
             entries: list of video info dicts
         """
         url = channel_config.url.strip().rstrip("/")
-        if ("youtube.com/@" in url or "youtube.com/channel/" in url or "youtube.com/c/" in url) and not (
-            url.endswith("/videos") or url.endswith("/streams") or url.endswith("/shorts")
-        ):
-            fetch_url = url + "/videos"
+        # If user configured a specific tab like /shorts, /streams, /live, or /featured, redirect to /videos
+        for tab_suffix in ("/shorts", "/streams", "/live", "/featured"):
+            if url.endswith(tab_suffix):
+                url = url[: -len(tab_suffix)].rstrip("/")
+                break
+
+        if "youtube.com/@" in url or "youtube.com/channel/" in url or "youtube.com/c/" in url:
+            if not url.endswith("/videos"):
+                fetch_url = url + "/videos"
+            else:
+                fetch_url = url
         else:
             fetch_url = url
 
