@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime
 import html
 import json
 import logging
@@ -190,6 +191,7 @@ def send_feishu_message(
     text: str = "",
     title: Optional[str] = None,
     webhook_url: Optional[str] = None,
+    header_color: str = "blue",
     timeout: int = 15,
 ) -> Optional[dict]:
     """
@@ -254,7 +256,7 @@ def send_feishu_message(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": card_title},
-            "template": "blue",
+            "template": header_color or "blue",
         },
         "elements": [
             {
@@ -696,3 +698,54 @@ def send_bilibili_episode_notification(
         feishu_webhook_url=fs_webhook,
     )
     return res.get("telegram") or res.get("wechat") or res.get("feishu")
+
+
+def send_sync_warning_notification(
+    platform: str = "Bilibili",
+    channel_name: str = "",
+    warning_type: str = "平台访问风控拦截",
+    detail: str = "",
+    action_summary: str = "已启动容灾保护，跳过本轮并平稳退出，等待下一轮自动重试",
+    config: Optional[object] = None,
+    **kwargs,
+) -> Optional[dict]:
+    """
+    Send formatted warning notification to Feishu (and WeChat/TG if available) when video sync
+    encounters platform-level rate limits or anti-scraping blocks (e.g. Bilibili HTTP 412 or code -352).
+    """
+    fs_app_id = kwargs.get("feishu_app_id") or getattr(config, "feishu_app_id", None) or os.environ.get("FEISHU_APP_ID")
+    fs_app_secret = kwargs.get("feishu_app_secret") or getattr(config, "feishu_app_secret", None) or os.environ.get("FEISHU_APP_SECRET")
+    fs_recv_id = kwargs.get("feishu_receive_id") or getattr(config, "feishu_receive_id", None) or os.environ.get("FEISHU_RECEIVE_ID") or os.environ.get("FEISHU_HOME_CHANNEL")
+    fs_recv_type = kwargs.get("feishu_receive_id_type") or getattr(config, "feishu_receive_id_type", None) or os.environ.get("FEISHU_RECEIVE_ID_TYPE")
+    fs_webhook = kwargs.get("feishu_webhook_url") or getattr(config, "feishu_webhook_url", None) or os.environ.get("FEISHU_WEBHOOK_URL")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    feishu_lines = [
+        f"**📻 播客平台**: {platform}",
+        f"**🎬 目标频道**: {channel_name or '所有待同步频道'}",
+        f"**⚠️ 告警类型**: {warning_type}",
+        f"**🔍 详细原因**: {detail or '遭遇平台反爬风控策略拦截'}",
+        f"**🛡️ 容灾策略**: {action_summary}",
+        f"**📦 数据状态**: 已有播客单集与 R2 音频完整保留，工作流已平稳退出（exit 0）",
+        f"**⏱️ 记录时间**: {now_str}",
+    ]
+    feishu_markdown = "\n\n".join(feishu_lines)
+
+    res = None
+    if (fs_app_id and fs_app_secret and fs_recv_id) or fs_webhook:
+        try:
+            res = send_feishu_message(
+                app_id=fs_app_id,
+                app_secret=fs_app_secret,
+                receive_id=fs_recv_id,
+                receive_id_type=fs_recv_type,
+                text=feishu_markdown,
+                title=f"⚠️ {platform} 播客同步风控提醒",
+                webhook_url=fs_webhook,
+                header_color="orange",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send sync warning notification via Feishu: {e}")
+
+    return res
+

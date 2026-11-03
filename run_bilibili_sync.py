@@ -30,7 +30,10 @@ from podcast_sync.feed import (
     generate_podcast_rss,
     validate_podcast_rss,
 )
-from podcast_sync.notifier import send_bilibili_episode_notification
+from podcast_sync.notifier import (
+    send_bilibili_episode_notification,
+    send_sync_warning_notification,
+)
 from podcast_sync.storage import StorageManager
 
 # Configure logging
@@ -143,8 +146,33 @@ def sync_single_bilibili_channel(
     # 1. Scan recent videos from space (fetch with buffer to find up to max_episodes videos)
     recent_videos = fetcher.fetch_recent_videos(space_url, limit=max(15, max_episodes * 2))
     if not recent_videos:
-        logger.warning(f"[{channel_name}] No videos retrieved from {space_url}")
-        return None
+        risk_reason = fetcher.last_risk_error or "未获取到 UP 主空间近期视频列表"
+        logger.warning(f"[{channel_name}] No videos retrieved from {space_url}: {risk_reason}")
+
+        # Send Feishu risk/rate-limit warning notification
+        try:
+            send_sync_warning_notification(
+                platform="Bilibili",
+                channel_name=channel_name,
+                warning_type="平台晚高峰反爬风控拦截 (412 / 352)",
+                detail=f"抓取 {space_url} 遭遇限制: {risk_reason}",
+                action_summary="触发容灾平稳保护：已有播客数据与 R2 缓存完好保留，跳过本轮同步，等待下一轮自动重试",
+                config=cfg,
+            )
+        except Exception as ne:
+            logger.warning(f"Failed to dispatch risk warning to Feishu: {ne}")
+
+        # Load existing manifest length for reporting
+        existing_manifest = storage.load_episodes_manifest(channel_id)
+        return {
+            "id": channel_id,
+            "title": channel_name,
+            "new": 0,
+            "total": len(existing_manifest),
+            "feed_url": f"{cfg.r2_public_url}/{channel_id}.xml",
+            "skipped_due_to_risk": True,
+            "risk_reason": risk_reason,
+        }
 
     # Auto-resolve channel_name and pinyin channel_id from uploader name unless explicitly overridden
     if recent_videos[0].get("uploader"):
@@ -542,9 +570,15 @@ def main() -> int:
         print("【播客专属订阅源列表 (Apple Podcasts Feeds)】")
         print("=" * 65)
         for r in results:
-            print(f"频道: {r['title']} [{r['id']}]")
-            print(f"  - 新增集数: {r['new']} | 总期数: {r['total']}")
-            print(f"  - 订阅链接: {r['feed_url']}")
+            if r.get("skipped_due_to_risk"):
+                print(f"频道: {r['title']} [{r['id']}] (⚠️ 本轮遭遇风控，已容灾跳过)")
+                print(f"  - 原因: {r.get('risk_reason')}")
+                print(f"  - 保留历史期数: {r['total']}")
+                print(f"  - 订阅链接: {r['feed_url']}")
+            else:
+                print(f"频道: {r['title']} [{r['id']}]")
+                print(f"  - 新增集数: {r['new']} | 总期数: {r['total']}")
+                print(f"  - 订阅链接: {r['feed_url']}")
             print("-" * 65)
 
     return 0 if results else 1

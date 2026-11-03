@@ -887,6 +887,44 @@ class TestPodcastSync(unittest.TestCase):
         self.assertEqual(len(leaf_res), 1)
         self.assertEqual(leaf_res[0]["id"], "11111111111")
 
+    def test_sync_warning_feishu_notification(self):
+        from unittest.mock import patch, MagicMock
+        from podcast_sync.notifier import send_sync_warning_notification
+
+        fake_token_resp = MagicMock()
+        fake_token_resp.read.return_value = json.dumps({"code": 0, "tenant_access_token": "mock_token"}).encode("utf-8")
+        fake_token_resp.__enter__.return_value = fake_token_resp
+
+        fake_card_resp = MagicMock()
+        fake_card_resp.read.return_value = json.dumps({"code": 0, "msg": "ok"}).encode("utf-8")
+        fake_card_resp.__enter__.return_value = fake_card_resp
+
+        def fake_dispatcher(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+            if "tenant_access_token" in url:
+                return fake_token_resp
+            return fake_card_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_dispatcher) as mock_urlopen:
+            res = send_sync_warning_notification(
+                platform="Bilibili",
+                channel_name="巫师财经",
+                warning_type="平台晚高峰反爬风控拦截 (412 / 352)",
+                detail="抓取 space 失败: B站服务器返回 HTTP 412",
+                action_summary="触发容灾保护：跳过本轮平稳退出",
+                feishu_app_id="test_app",
+                feishu_app_secret="test_sec",
+                feishu_receive_id="oc_test_chat",
+            )
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("code"), 0)
+            self.assertEqual(mock_urlopen.call_count, 2)
+            sent_body = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+            card_data = json.loads(sent_body["content"])
+            self.assertEqual(card_data["header"]["template"], "orange")
+            self.assertIn("巫师财经", card_data["elements"][0]["text"]["content"])
+            self.assertIn("容灾保护", card_data["elements"][0]["text"]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

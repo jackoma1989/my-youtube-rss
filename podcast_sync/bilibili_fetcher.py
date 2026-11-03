@@ -155,6 +155,7 @@ class BilibiliFetcher:
         # Only use proxy if explicitly provided or CHINA_PROXY is set (do NOT inherit overseas Clash proxy)
         self.proxy = proxy or os.environ.get("CHINA_PROXY")
         self._cookie_file: Optional[Path] = None
+        self.last_risk_error: Optional[str] = None
         if self.cookies:
             self._cookie_file = create_netscape_cookie_file(self.cookies)
             logger.info(f"Bilibili authentication cookie active (keys: {list(self.cookies.keys())})")
@@ -281,6 +282,7 @@ class BilibiliFetcher:
         """
         mid = self.extract_mid(space_url_or_mid)
         results = []
+        self.last_risk_error = None
 
         # 1. Primary Method: Query Bilibili Official Dynamic Feed API (direct first, fallback to proxy)
         if mid:
@@ -313,10 +315,16 @@ class BilibiliFetcher:
                         resp = requests.get(page_url, headers=headers, cookies=self.cookies, proxies=p, timeout=10)
                         if resp.status_code != 200:
                             logger.warning(f"Bilibili dynamic feed returned HTTP {resp.status_code} via {mode_label}")
+                            if resp.status_code == 412:
+                                self.last_risk_error = f"B站动态接口返回 HTTP 412 (访问频控拦截)"
                             break
                         data_json = resp.json()
                         if data_json.get("code") != 0:
                             logger.warning(f"Bilibili dynamic feed returned code {data_json.get('code')}: {data_json.get('message')}")
+                            if data_json.get("code") == -352:
+                                self.last_risk_error = f"B站动态接口返回 code -352 (触发极验人机验证码风控)"
+                            elif data_json.get("code") == -401:
+                                self.last_risk_error = f"B站动态接口返回 code -401 (非法访问频控)"
                             break
                         data_data = data_json.get("data") or {}
                         items = data_data.get("items") or []
@@ -355,6 +363,7 @@ class BilibiliFetcher:
 
                     if feed_results:
                         logger.info(f"Successfully retrieved {len(feed_results)} recent video(s) via dynamic feed ({mode_label}).")
+                        self.last_risk_error = None
                         return feed_results
                 except Exception as e:
                     logger.warning(f"Dynamic feed request via {mode_label} failed: {e}")
@@ -375,6 +384,13 @@ class BilibiliFetcher:
                 info = ydl.extract_info(space_url, download=False)
                 entries = list(info.get("entries", [])) if info else []
         except Exception as e:
+            err_str = str(e)
+            if "412" in err_str or "blocked by server" in err_str.lower():
+                self.last_risk_error = "B站空间扫描遭遇 WAF 阻断 (HTTP 412 晚高峰反爬拦截)"
+            elif "352" in err_str:
+                self.last_risk_error = "B站空间扫描返回 352 (极验验证码风控拦截)"
+            elif not self.last_risk_error:
+                self.last_risk_error = f"空间扫描失败: {e}"
             logger.error(f"Failed to scan space {space_url} via yt-dlp: {e}")
             return []
 
