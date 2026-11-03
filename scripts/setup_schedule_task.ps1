@@ -26,6 +26,7 @@ param (
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $TriggerScript = Join-Path $ScriptDir "trigger_podcast_sync.ps1"
+$SilentScript = Join-Path $ScriptDir "trigger_silent.py"
 
 if (-not (Test-Path $TriggerScript)) {
     Write-Error "Trigger script not found: $TriggerScript"
@@ -42,8 +43,8 @@ $PlatformMap = @{
     "Bilibili" = @{
         TaskName    = "BilibiliPodcastSyncTrigger";
         Workflow    = "bilibili_sync.yml";
-        Times       = @("11:00", "23:00");
-        Description = "Trigger GitHub Actions Bilibili Podcast Sync daily at 11:00 and 23:00."
+        Times       = @("11:00", "18:00");
+        Description = "Trigger GitHub Actions Bilibili Podcast Sync daily at 11:00 and 18:00."
     };
     "Douyin"   = @{
         TaskName    = "DouyinPodcastSyncTrigger";
@@ -107,8 +108,15 @@ foreach ($p in $PlatformsToProcess) {
             Write-Host "  Scheduled times : $($times -join ', ') Daily"
             Write-Host "  Workflow        : $wf"
 
-            $Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TriggerScript`" -Workflow `"$wf`""
-            $TaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Arguments -WorkingDirectory $ProjectRoot
+            $pywCmd = Get-Command pythonw -ErrorAction SilentlyContinue
+            if ($pywCmd -and (Test-Path $SilentScript)) {
+                $pywExe = $pywCmd.Source
+                $Arguments = "`"$SilentScript`" -Workflow `"$wf`""
+                $TaskAction = New-ScheduledTaskAction -Execute $pywExe -Argument $Arguments -WorkingDirectory $ProjectRoot
+            } else {
+                $Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TriggerScript`" -Workflow `"$wf`""
+                $TaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Arguments -WorkingDirectory $ProjectRoot
+            }
 
             $triggers = @()
             foreach ($t in $times) {
@@ -119,6 +127,7 @@ foreach ($p in $PlatformsToProcess) {
                 -AllowStartIfOnBatteries `
                 -DontStopIfGoingOnBatteries `
                 -StartWhenAvailable `
+                -Hidden `
                 -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
                 -RestartCount 1 `
                 -RestartInterval (New-TimeSpan -Minutes 5)
