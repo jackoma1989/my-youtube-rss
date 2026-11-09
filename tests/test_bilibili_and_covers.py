@@ -59,5 +59,45 @@ class TestBilibiliAndCovers(unittest.TestCase):
                 target.unlink(missing_ok=True)
 
 
+    def test_fetch_recent_videos_via_medialist(self):
+        fetcher = BilibiliFetcher()
+        fake_api_data = {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "has_more": False,
+                "media_list": [
+                    {
+                        "id": 123456,
+                        "bv_id": "BV1test12345",
+                        "title": "测试巫师财经视频",
+                        "cover": "https://i0.hdslb.com/bfs/archive/test.jpg",
+                        "intro": "测试描述",
+                        "duration": 600,
+                        "pubtime": 1730000000,
+                        "upper": {
+                            "mid": 472747194,
+                            "name": "巫师财经",
+                            "face": "https://i0.hdslb.com/bfs/face/face.jpg",
+                        },
+                    }
+                ],
+            },
+        }
+
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = fake_api_data
+            mock_get.return_value = mock_resp
+
+            res = fetcher.fetch_recent_videos("472747194", limit=5)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["video_id"], "BV1test12345")
+            self.assertEqual(res[0]["title"], "测试巫师财经视频")
+            self.assertEqual(res[0]["uploader"], "巫师财经")
+            self.assertIsNone(fetcher.last_risk_error)
+
+
 if __name__ == "__main__":
     unittest.main()

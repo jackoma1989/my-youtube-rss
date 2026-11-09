@@ -277,14 +277,79 @@ class BilibiliFetcher:
     def fetch_recent_videos(self, space_url_or_mid: str, limit: int = 3) -> List[dict]:
         """
         Fetch list of recent video entries from UP space.
-        Prioritizes Bilibili's official dynamic feed API (HTTP 200, zero 412 block)
-        with direct connection first, and falls back to proxy/yt-dlp if needed.
+        Prioritizes Bilibili's player medialist API (zero WAF 412/352 block, no cookies/wbi needed),
+        with fallback to official dynamic feed API, and tertiary fallback to yt-dlp space extractor.
         """
         mid = self.extract_mid(space_url_or_mid)
         results = []
         self.last_risk_error = None
 
-        # 1. Primary Method: Query Bilibili Official Dynamic Feed API (direct first, fallback to proxy)
+        # 1. Primary Method: Bilibili Player MediaList API (x/v2/medialist/resource/list)
+        # Highly reliable, bypasses WAF 412 and -352 captcha blocks, no cookies required
+        if mid:
+            medialist_url = f"https://api.bilibili.com/x/v2/medialist/resource/list?mobi_app=web&type=1&biz_id={mid}&ps={min(limit, 30)}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Referer": f"https://space.bilibili.com/{mid}",
+                "Origin": "https://space.bilibili.com",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+            proxy_attempts = [None]
+            if self.proxy:
+                proxy_attempts.append({"http": self.proxy, "https": self.proxy})
+
+            for p in proxy_attempts:
+                mode_label = "direct connection" if p is None else f"proxy ({self.proxy})"
+                try:
+                    current_oid = None
+                    medialist_results = []
+                    seen_bvids = set()
+                    while len(medialist_results) < limit:
+                        page_url = medialist_url if not current_oid else f"{medialist_url}&oid={current_oid}&direction=false"
+                        resp = requests.get(page_url, headers=headers, proxies=p, timeout=10)
+                        if resp.status_code != 200:
+                            break
+                        data_json = resp.json()
+                        if data_json.get("code") != 0:
+                            break
+                        items = data_json.get("data", {}).get("media_list", [])
+                        if not items:
+                            break
+                        last_id = None
+                        for it in items:
+                            bvid = it.get("bv_id")
+                            if not bvid or bvid in seen_bvids:
+                                continue
+                            seen_bvids.add(bvid)
+                            upper = it.get("upper") or {}
+                            medialist_results.append({
+                                "video_id": bvid,
+                                "url": f"https://www.bilibili.com/video/{bvid}",
+                                "title": it.get("title"),
+                                "cover": it.get("cover"),
+                                "description": it.get("intro") or "",
+                                "uploader": upper.get("name"),
+                                "uploader_face": upper.get("face"),
+                                "duration": it.get("duration"),
+                                "pubtime": it.get("pubtime"),
+                            })
+                            last_id = it.get("id")
+                            if len(medialist_results) >= limit:
+                                break
+                        has_more = data_json.get("data", {}).get("has_more", False)
+                        if not has_more or not last_id or last_id == current_oid:
+                            break
+                        current_oid = last_id
+
+                    if medialist_results:
+                        logger.info(f"Successfully retrieved {len(medialist_results)} recent video(s) via medialist API ({mode_label}).")
+                        self.last_risk_error = None
+                        return medialist_results
+                except Exception as e:
+                    logger.debug(f"Medialist request via {mode_label} failed: {e}")
+
+        # 2. Secondary Method: Query Bilibili Official Dynamic Feed API (direct first, fallback to proxy)
         if mid:
             api_url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={mid}"
             headers = {
