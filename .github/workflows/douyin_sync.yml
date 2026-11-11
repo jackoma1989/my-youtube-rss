@@ -73,8 +73,12 @@ jobs:
       - name: Install ffmpeg
         if: steps.check_channels.outputs.has_channels == 'true'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          if ! command -v ffmpeg &> /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          else
+            echo "ffmpeg already installed: $(ffmpeg -version | head -n 1)"
+          fi
           ffmpeg -version | head -n 2
 
       - name: Start Tailscale Exit-Node Proxy (TailSocks)
